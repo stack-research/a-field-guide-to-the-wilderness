@@ -31,6 +31,14 @@ class WildernessCliTests(unittest.TestCase):
             capture_output=True,
         )
 
+    def load_history(self, artifact: dict) -> list[dict]:
+        history_path = Path(artifact["history_path"])
+        return [
+            json.loads(line)
+            for line in history_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
     def test_benign_file_can_be_promoted(self) -> None:
         sample = ROOT / "data" / "benign" / "sample.json"
         copied = self.cwd / "sample.json"
@@ -48,7 +56,22 @@ class WildernessCliTests(unittest.TestCase):
         promote = self.run_cli("promote", str(report_path))
         self.assertEqual(promote.returncode, 0, promote.stdout + promote.stderr)
         promoted = json.loads(report_path.read_text(encoding="utf-8"))
-        self.assertEqual(promoted["status"], "safe_camp")
+        self.assertEqual(promoted["status"], "shelter")
+        history = self.load_history(promoted)
+        self.assertEqual([event["event_type"] for event in history], ["received", "inspected", "promoted"])
+
+    def test_inspect_writes_received_and_inspected_history_events(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+
+        inspect = self.run_cli("inspect", str(copied), "--json")
+        self.assertEqual(inspect.returncode, 0, inspect.stderr)
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+        history = self.load_history(artifact)
+        self.assertEqual([event["event_type"] for event in history], ["received", "inspected"])
+        self.assertEqual(history[1]["payload"]["report_path"], str(report_path.resolve()))
 
     def test_archive_traversal_is_blocked(self) -> None:
         bundle = self.cwd / "traversal.zip"
@@ -79,6 +102,88 @@ class WildernessCliTests(unittest.TestCase):
         result = self.run_cli("manifest-check", str(manifest))
         self.assertEqual(result.returncode, 20)
         self.assertIn("valid: False", result.stdout)
+
+    def test_report_command_derives_safe_camp_state_from_history(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+
+        inspect = self.run_cli("inspect", str(copied))
+        report_path = Path(inspect.stdout.strip().split("report_path: ", 1)[1])
+        promote = self.run_cli("promote", str(report_path))
+        self.assertEqual(promote.returncode, 0, promote.stdout + promote.stderr)
+
+        report = self.run_cli("report", str(report_path))
+        self.assertEqual(report.returncode, 0)
+        self.assertIn("status: safe_camp", report.stdout)
+
+    def test_verify_accepts_promotable_artifact_and_can_require_promotion(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+
+        inspect = self.run_cli("inspect", str(copied))
+        report_path = Path(inspect.stdout.strip().split("report_path: ", 1)[1])
+
+        verify = self.run_cli("verify", str(report_path))
+        self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
+        self.assertIn("verified: promotable", verify.stdout)
+
+        require_promoted = self.run_cli("verify", str(report_path), "--require-promoted")
+        self.assertEqual(require_promoted.returncode, 20)
+
+        promote = self.run_cli("promote", str(report_path))
+        self.assertEqual(promote.returncode, 0, promote.stdout + promote.stderr)
+
+        require_promoted = self.run_cli("verify", str(report_path), "--require-promoted")
+        self.assertEqual(require_promoted.returncode, 0, require_promoted.stdout + require_promoted.stderr)
+        self.assertIn("verified: promoted", require_promoted.stdout)
+
+    def test_verify_blocks_discarded_artifact(self) -> None:
+        bundle = self.cwd / "traversal.zip"
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr("../escape.txt", "nope")
+
+        inspect = self.run_cli("inspect", str(bundle), "--json")
+        artifact = json.loads(inspect.stdout)
+
+        verify = self.run_cli("verify", str(self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"))
+        self.assertEqual(verify.returncode, 20)
+
+    def test_blocked_promotion_appends_history_event(self) -> None:
+        bundle = self.cwd / "traversal.zip"
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr("../escape.txt", "nope")
+
+        inspect = self.run_cli("inspect", str(bundle), "--json")
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+
+        promote = self.run_cli("promote", str(report_path))
+        self.assertEqual(promote.returncode, 20)
+        history = self.load_history(artifact)
+        self.assertEqual(history[-1]["event_type"], "promotion_blocked")
+        self.assertIn("blocking findings present", history[-1]["payload"]["reasons"])
+
+    def test_repeated_promotion_attempts_remain_append_only(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+
+        inspect = self.run_cli("inspect", str(copied), "--json")
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+
+        first = self.run_cli("promote", str(report_path))
+        second = self.run_cli("promote", str(report_path))
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+
+        history = self.load_history(artifact)
+        self.assertEqual(
+            [event["event_type"] for event in history],
+            ["received", "inspected", "promoted", "promoted"],
+        )
 
 
 if __name__ == "__main__":

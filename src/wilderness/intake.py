@@ -17,6 +17,7 @@ class StateLayout:
     quarantine: Path
     shelter: Path
     reports: Path
+    history: Path
     safe_camp: Path
 
 
@@ -35,9 +36,17 @@ def ensure_state(root: Path) -> StateLayout:
         quarantine=root / "quarantine",
         shelter=root / "shelter",
         reports=root / "reports",
+        history=root / "history",
         safe_camp=root / "safe-camp",
     )
-    for path in (layout.root, layout.quarantine, layout.shelter, layout.reports, layout.safe_camp):
+    for path in (
+        layout.root,
+        layout.quarantine,
+        layout.shelter,
+        layout.reports,
+        layout.history,
+        layout.safe_camp,
+    ):
         path.mkdir(parents=True, exist_ok=True)
     return layout
 

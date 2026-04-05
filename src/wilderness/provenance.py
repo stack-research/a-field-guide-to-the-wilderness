@@ -36,3 +36,16 @@ def initial_provenance(source: Path, quarantine_path: Path) -> dict:
         "raw_sha256": raw_material_hash(quarantine_path),
         "raw_size_bytes": raw_material_size(quarantine_path),
     }
+
+
+def inspection_history_path(state_root: Path, inspection_id: str) -> Path:
+    return state_root / "history" / f"{inspection_id}.jsonl"
+
+
+def build_history_event(inspection_id: str, event_type: str, payload: dict) -> dict:
+    return {
+        "inspection_id": inspection_id,
+        "occurred_at": utc_now(),
+        "event_type": event_type,
+        "payload": payload,
+    }

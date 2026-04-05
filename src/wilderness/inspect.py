@@ -153,7 +153,12 @@ def _scan_suspicious_text(decoded: str, rel_path: Path, policy: Policy) -> list[
     return findings
 
 
-def inspect_bundle(intake: IntakeRecord, unpacked: UnpackResult, policy: Policy) -> dict:
+def inspect_bundle(
+    intake: IntakeRecord,
+    unpacked: UnpackResult,
+    policy: Policy,
+    history_path: Path | None = None,
+) -> dict:
     findings = list(unpacked.findings)
     file_records = []
     manifest_paths = []
@@ -259,6 +264,7 @@ def inspect_bundle(intake: IntakeRecord, unpacked: UnpackResult, policy: Policy)
             "source_path": str(intake.source_path),
             "quarantine_path": str(intake.quarantine_path),
         },
+        "history_path": str(history_path.resolve()) if history_path is not None else None,
         "inspection_id": intake.inspection_id,
         "received_at": intake.provenance["received_at"],
         "provenance": {

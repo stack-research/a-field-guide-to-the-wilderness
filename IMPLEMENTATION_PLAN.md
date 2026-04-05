@@ -13,7 +13,7 @@ This checklist feeds the first implementation sprints for `wilderness`.
 
 - [x] Create `pyproject.toml` with a `wilderness` console entry point
 - [x] Scaffold `src/wilderness/`
-- [x] Add `inspect`, `report`, `promote`, and `manifest-check` commands
+- [x] Add `inspect`, `report`, `promote`, `verify`, and `manifest-check` commands
 - [x] Create a local state root at `.wilderness/`
 
 ## Intake, Shelter, And Inspection
@@ -53,3 +53,11 @@ This checklist feeds the first implementation sprints for `wilderness`.
 - [x] Add richer manifest policy and provenance schema validation
 - [x] Add shell-friendly exit codes for blocked and promotable states
 - [x] Add snapshot tests for the human report output
+
+## Trust Ledger And Downstream Gate
+
+- [x] Add a per-inspection append-only history ledger under `.wilderness/history/`
+- [x] Record `received`, `inspected`, `promotion_blocked`, and `promoted` events
+- [x] Keep inspection artifacts immutable after `inspect`
+- [x] Derive current safe-camp state from history instead of rewriting the report
+- [x] Add `verify` as the downstream CLI gate for promotable and promoted artifacts

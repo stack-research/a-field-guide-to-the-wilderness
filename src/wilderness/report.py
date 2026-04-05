@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from pathlib import Path
 
@@ -13,6 +14,49 @@ def write_report(report: dict, path: Path) -> Path:
 
 def load_report(path: str) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def append_history_event(path: Path, event: dict) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, sort_keys=True))
+        handle.write("\n")
+    return path
+
+
+def load_history(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    events = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            events.append(json.loads(line))
+    return events
+
+
+def load_history_for_report(report: dict) -> list[dict]:
+    history_path = report.get("history_path")
+    if not history_path:
+        return []
+    return load_history(Path(history_path))
+
+
+def apply_history(report: dict, events: list[dict]) -> dict:
+    view = deepcopy(report)
+    promoted_event = next(
+        (event for event in reversed(events) if event["event_type"] == "promoted"),
+        None,
+    )
+    if promoted_event is None:
+        return view
+
+    view["status"] = "safe_camp"
+    view["promotion"]["eligible"] = True
+    view["promotion"]["target_path"] = promoted_event["payload"].get("target_path")
+    return view
 
 
 def render_report(report: dict) -> str:

@@ -155,6 +155,8 @@ Detailed flow:
 4. **Write field notes**
    It emits a structured inspection artifact describing findings, provenance, policy decisions, and promotion status.
 
+   It also appends immutable trust events to a per-inspection history log so later commands can derive current state without rewriting the original artifact.
+
 5. **Choose the path**
    The bundle remains quarantined, is normalized into shelter-only output, is promoted to safe camp, or is thrown on the discard pile.
 
@@ -178,6 +180,7 @@ Every run should produce:
 
 - a human-readable terminal report
 - a machine-readable inspection artifact
+- an append-only inspection history log for trust-state transitions
 
 Recommended top-level inspection artifact fields:
 
@@ -186,6 +189,7 @@ Recommended top-level inspection artifact fields:
 - `input_ref`
 - `inspection_id`
 - `received_at`
+- `history_path`
 - `provenance`
 - `files`
 - `findings`
@@ -299,6 +303,9 @@ camp inspect bundle.zip --json
 # Promote a previously inspected bundle to safe camp if policy allows
 camp promote inspection.json
 
+# Verify that a report is still promotable or already promoted
+camp verify inspection.json
+
 # Show a short human report for an inspection artifact
 camp report inspection.json
 
@@ -311,6 +318,7 @@ The command names are placeholders. The important point is the workflow shape:
 - inspect
 - report
 - promote
+- verify
 - validate
 
 ## Policy Model
@@ -400,6 +408,8 @@ The first release is successful if it can:
 3. block known dangerous archive and filesystem tricks
 4. preserve provenance and redaction history
 5. integrate cleanly with a downstream customer that refuses uninspected bundles
+
+For the first terminal-native integration path, that downstream customer should be able to shell out to `verify` and rely on its exit code instead of re-implementing trust logic.
 
 ## Open Questions
 
