@@ -35,6 +35,8 @@ class Policy:
     suspicious_text_snippet_chars: int = 96
     suspicious_text_window_lines: int = 1
     suspicious_text_rule_packs: list[str] = field(default_factory=list)
+    discard_retention_enabled: bool = False
+    discard_copy_mode: str = "copy"
     redaction_required: bool = False
     redaction: RedactionPolicy = field(default_factory=RedactionPolicy)
     source_path: str | None = field(default=None, repr=False)

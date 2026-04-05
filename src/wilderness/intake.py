@@ -18,6 +18,7 @@ class StateLayout:
     shelter: Path
     reports: Path
     history: Path
+    discard: Path
     safe_camp: Path
 
 
@@ -37,6 +38,7 @@ def ensure_state(root: Path) -> StateLayout:
         shelter=root / "shelter",
         reports=root / "reports",
         history=root / "history",
+        discard=root / "discard",
         safe_camp=root / "safe-camp",
     )
     for path in (
@@ -45,6 +47,7 @@ def ensure_state(root: Path) -> StateLayout:
         layout.shelter,
         layout.reports,
         layout.history,
+        layout.discard,
         layout.safe_camp,
     ):
         path.mkdir(parents=True, exist_ok=True)
@@ -69,6 +72,17 @@ def _copy_source(source: Path, destination: Path) -> None:
     else:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
+
+
+def retain_discard_copy(quarantine_path: Path, state: StateLayout, inspection_id: str) -> Path:
+    discard_path = state.discard / inspection_id / "raw" / quarantine_path.name
+    if discard_path.exists():
+        if discard_path.is_dir():
+            shutil.rmtree(discard_path)
+        else:
+            discard_path.unlink()
+    _copy_source(quarantine_path, discard_path)
+    return discard_path
 
 
 def land_input(source: str, policy: Policy) -> tuple[IntakeRecord, StateLayout]:

@@ -80,6 +80,9 @@ def render_report(report: dict) -> str:
             "promotion_blockers: "
             + ", ".join(safe_display(reason) for reason in report["promotion"]["blocking_reasons"])
         )
+    if report.get("discard", {}).get("retained"):
+        lines.append(f"discard_retained: {report['discard']['retained']}")
+        lines.append(f"discard_path: {safe_display(report['discard']['path'])}")
     for finding in report["findings"][:10]:
         path = finding.get("path", "-")
         if finding["family"] == "suspicious_text":

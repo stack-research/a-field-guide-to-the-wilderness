@@ -76,3 +76,11 @@ This checklist feeds the first implementation sprints for `wilderness`.
 - [x] Record suspicious-text normalization and pack provenance in inspection artifacts
 - [x] Add `suspicious-text-check` for rule listing and match explanation on single files
 - [x] Surface exclude-pattern suppressions in explainability output without changing inspection findings
+
+## Discard Pile And Forensic Retention
+
+- [x] Add an explicit `.wilderness/discard/` state path
+- [x] Keep discard retention opt-in by policy
+- [x] Copy raw quarantined input into discard storage for retained blocked artifacts
+- [x] Record discard retention details in the inspection artifact and history log
+- [x] Surface discard retention in the human report without changing promotion semantics

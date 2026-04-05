@@ -616,6 +616,11 @@ def inspect_bundle(
         "inspection_id": intake.inspection_id,
         "received_at": intake.provenance["received_at"],
         "suspicious_text": suspicious_text_summary(suspicious_text_rules),
+        "discard": {
+            "retained": False,
+            "path": None,
+            "source": "raw_quarantine_copy",
+        },
         "provenance": {
             **intake.provenance,
             "normalized_path": str(unpacked.normalized_output_path),

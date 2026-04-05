@@ -182,6 +182,8 @@ Every run should produce:
 - a machine-readable inspection artifact
 - an append-only inspection history log for trust-state transitions
 
+When policy enables forensic retention for blocked artifacts, the run should also produce a discard-pile copy of the raw quarantined input.
+
 Recommended top-level inspection artifact fields:
 
 - `artifact_type`
@@ -190,6 +192,7 @@ Recommended top-level inspection artifact fields:
 - `inspection_id`
 - `received_at`
 - `history_path`
+- `discard`
 - `provenance`
 - `files`
 - `findings`
@@ -258,6 +261,7 @@ The trust model should be operational, not philosophical.
 
 - blocked from promotion
 - retained only if policy allows forensic reference
+- when retained, the raw quarantined input is copied into an explicit discard area
 
 ## Promotion Rules
 
@@ -346,6 +350,7 @@ Expected policy controls:
 - suspicious-text window size
 - suspicious-text local rule packs
 - suspicious-text normalization behavior
+- discard retention
 - redaction requirements
 - promotion thresholds
 

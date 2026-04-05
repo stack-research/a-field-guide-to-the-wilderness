@@ -13,7 +13,7 @@ from wilderness.inspect import (
     suspicious_text_check,
     suspicious_text_rule_listing,
 )
-from wilderness.intake import land_input
+from wilderness.intake import land_input, retain_discard_copy
 from wilderness.policy import load_policy
 from wilderness.provenance import build_history_event, inspection_history_path
 from wilderness.report import (
@@ -79,8 +79,18 @@ def _load_rule_set_or_error(policy: object):
         return None
 
 
+def _validate_policy(policy) -> str | None:
+    if policy.discard_copy_mode != "copy":
+        return "discard_copy_mode must be 'copy'"
+    return None
+
+
 def cmd_inspect(args: argparse.Namespace) -> int:
     policy = load_policy(args.policy)
+    policy_error = _validate_policy(policy)
+    if policy_error is not None:
+        print(f"policy error: {policy_error}", file=sys.stderr)
+        return EXIT_BLOCKED
     suspicious_text_rules = _load_rule_set_or_error(policy)
     if suspicious_text_rules is None:
         return EXIT_BLOCKED
@@ -107,6 +117,11 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         history_path=history_path,
         suspicious_text_rules=suspicious_text_rules,
     )
+    discard_path = None
+    if artifact["status"] == "discard" and policy.discard_retention_enabled:
+        discard_path = retain_discard_copy(intake.quarantine_path, state, intake.inspection_id)
+        artifact["discard"]["retained"] = True
+        artifact["discard"]["path"] = str(discard_path.resolve())
     report_path = write_report(artifact, _report_path(state.root, intake.inspection_id))
     append_history_event(
         history_path,
@@ -121,6 +136,18 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             },
         ),
     )
+    if discard_path is not None:
+        append_history_event(
+            history_path,
+            build_history_event(
+                intake.inspection_id,
+                "discard_retained",
+                {
+                    "discard_path": str(discard_path.resolve()),
+                    "source": artifact["discard"]["source"],
+                },
+            ),
+        )
     if args.json:
         print(report_path.read_text(encoding="utf-8"), end="")
     else:

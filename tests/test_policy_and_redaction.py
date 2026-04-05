@@ -89,6 +89,18 @@ class WildernessPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_benign_artifact_does_not_create_discard_copy_when_retention_enabled(self) -> None:
+        sample = self.cwd / "sample.json"
+        sample.write_text('{"ok": true}\n', encoding="utf-8")
+        policy = self.cwd / "policy.toml"
+        policy.write_text("discard_retention_enabled = true\n", encoding="utf-8")
+
+        inspect = self.run_cli("inspect", str(sample), "--json", "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 0, inspect.stderr)
+        artifact = json.loads(inspect.stdout)
+        self.assertFalse(artifact["discard"]["retained"])
+        self.assertFalse((self.cwd / ".wilderness" / "discard" / artifact["inspection_id"]).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

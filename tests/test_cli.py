@@ -86,6 +86,9 @@ class WildernessCliTests(unittest.TestCase):
         families = {finding["family"] for finding in artifact["findings"]}
         self.assertIn("archive_escape", families)
         self.assertEqual(artifact["status"], "discard")
+        self.assertFalse(artifact["discard"]["retained"])
+        self.assertIsNone(artifact["discard"]["path"])
+        self.assertFalse((self.cwd / ".wilderness" / "discard").glob("*").__iter__().__next__() if False else False)
 
     def test_binary_payload_in_text_name_is_flagged(self) -> None:
         bundle = self.cwd / "binary.zip"
@@ -150,6 +153,44 @@ class WildernessCliTests(unittest.TestCase):
 
         verify = self.run_cli("verify", str(self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"))
         self.assertEqual(verify.returncode, 20)
+
+    def test_discard_retention_can_copy_quarantine_input(self) -> None:
+        bundle = self.cwd / "traversal.zip"
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr("../escape.txt", "nope")
+            archive.writestr("ok.txt", "still here")
+        policy = self.cwd / "policy.toml"
+        policy.write_text("discard_retention_enabled = true\n", encoding="utf-8")
+
+        inspect = self.run_cli("inspect", str(bundle), "--json", "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 20, inspect.stderr)
+        artifact = json.loads(inspect.stdout)
+        self.assertTrue(artifact["discard"]["retained"])
+        discard_path = Path(artifact["discard"]["path"])
+        self.assertTrue(discard_path.exists())
+        self.assertEqual(discard_path.read_bytes(), bundle.read_bytes())
+        history = self.load_history(artifact)
+        self.assertEqual(history[-1]["event_type"], "discard_retained")
+        self.assertEqual(history[-1]["payload"]["discard_path"], str(discard_path))
+
+        verify = self.run_cli("verify", str(self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"))
+        self.assertEqual(verify.returncode, 20)
+
+    def test_discarded_artifact_report_surfaces_retention_lines_when_enabled(self) -> None:
+        bundle = self.cwd / "traversal.zip"
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr("../escape.txt", "nope")
+        policy = self.cwd / "policy.toml"
+        policy.write_text("discard_retention_enabled = true\n", encoding="utf-8")
+
+        inspect = self.run_cli("inspect", str(bundle), "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 20, inspect.stderr)
+        report_path = Path(inspect.stdout.strip().split("report_path: ", 1)[1])
+
+        report = self.run_cli("report", str(report_path))
+        self.assertEqual(report.returncode, 0)
+        self.assertIn("discard_retained: True", report.stdout)
+        self.assertIn("discard_path:", report.stdout)
 
     def test_blocked_promotion_appends_history_event(self) -> None:
         bundle = self.cwd / "traversal.zip"

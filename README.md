@@ -44,6 +44,8 @@ Each inspection writes:
 - a JSON inspection artifact with status, findings, provenance, policy, and promotion eligibility
 - an append-only JSONL history ledger at `.wilderness/history/<inspection-id>.jsonl`
 
+When policy enables forensic retention for blocked artifacts, `inspect` also copies the raw quarantined input into `.wilderness/discard/<inspection-id>/raw/` and records that path in the inspection artifact.
+
 Inspection artifacts now also carry a top-level `suspicious_text` section with normalization metadata, built-in rule counts, and loaded pack provenance.
 
 The inspection artifact is immutable after `inspect`. Live trust state is derived from the history ledger, not by rewriting the original report.
@@ -88,6 +90,11 @@ exclude_pattern = "example|never"
 window_lines = 1
 ```
 
+Discard-retention policy controls are:
+
+- `discard_retention_enabled`
+- `discard_copy_mode`
+
 ## Exit Codes
 
 - `wilderness inspect`: `0` promotable, `10` completed but review-needed, `20` discard or blocked
@@ -105,6 +112,7 @@ window_lines = 1
   shelter/
   reports/
   history/
+  discard/
   safe-camp/
 src/wilderness/
 tests/
