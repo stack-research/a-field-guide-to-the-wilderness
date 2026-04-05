@@ -228,6 +228,21 @@ class WildernessHardeningTests(unittest.TestCase):
         rendered = render_report(artifact)
         self.assertIn("suspicious_split_prompt.txt:1-2 system_prompt_reference", rendered)
 
+    def test_normalized_matching_catches_fullwidth_evasion(self) -> None:
+        fixture = ROOT / "data" / "hostile" / "suspicious_normalized_prompt.txt"
+        copied = self.cwd / fixture.name
+        shutil.copy2(fixture, copied)
+
+        inspect, artifact = self.inspect_json(copied)
+        self.assertEqual(inspect.returncode, 0)
+        suspicious = [finding for finding in artifact["findings"] if finding["family"] == "suspicious_text"]
+        normalized_match = next(
+            finding for finding in suspicious if finding["rule_id"] == "system_prompt_reference"
+        )
+        self.assertEqual(normalized_match["match_mode"], "normalized")
+        rendered = render_report(artifact)
+        self.assertIn("system_prompt_reference normalized", rendered)
+
     def test_repeated_hits_on_one_line_do_not_flood_findings(self) -> None:
         fixture = ROOT / "data" / "hostile" / "suspicious_repeated.txt"
         copied = self.cwd / fixture.name
@@ -338,6 +353,13 @@ class WildernessHardeningTests(unittest.TestCase):
         self.assertEqual(inspect.returncode, 0, inspect.stderr)
         suspicious = [finding for finding in artifact["findings"] if finding["family"] == "suspicious_text"]
         self.assertTrue(any(finding["rule_id"] == "audit_log_leak" for finding in suspicious))
+        self.assertEqual(artifact["suspicious_text"]["rule_count"], 7)
+        self.assertEqual(len(artifact["suspicious_text"]["loaded_packs"]), 1)
+        self.assertEqual(
+            artifact["suspicious_text"]["loaded_packs"][0]["rule_count"],
+            1,
+        )
+        self.assertTrue(artifact["suspicious_text"]["loaded_packs"][0]["sha256"])
 
     def test_rule_pack_exclude_pattern_can_suppress_benign_example(self) -> None:
         sample = self.cwd / "sample.txt"

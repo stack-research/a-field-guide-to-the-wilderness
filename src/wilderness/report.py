@@ -86,10 +86,14 @@ def render_report(report: dict) -> str:
             line = finding.get("line", "?")
             end_line = finding.get("end_line")
             rule_id = finding.get("rule_id", "unknown")
+            match_mode = finding.get("match_mode")
             snippet = finding.get("snippet", "")
             line_display = str(line) if end_line in (None, line) else f"{line}-{end_line}"
+            rule_display = safe_display(rule_id)
+            if match_mode == "normalized":
+                rule_display += " normalized"
             lines.append(
-                f"[{finding['severity']}] suspicious_text {safe_display(path)}:{line_display} {safe_display(rule_id)} :: {safe_display(snippet)}"
+                f"[{finding['severity']}] suspicious_text {safe_display(path)}:{line_display} {rule_display} :: {safe_display(snippet)}"
             )
             continue
         lines.append(

@@ -78,6 +78,11 @@ def is_likely_binary(data: bytes) -> bool:
         return False
     if b"\x00" in data:
         return True
+    try:
+        data.decode("utf-8")
+        return False
+    except UnicodeDecodeError:
+        pass
     sample = data[:4096]
     non_text = sum(
         1

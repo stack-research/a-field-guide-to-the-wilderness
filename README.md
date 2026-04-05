@@ -1,5 +1,3 @@
-# wilderness
-
 `wilderness` is a terminal-native perimeter for hostile artifact intake.
 
 > “The art of surviving interactions with text, and other artifacts, from the outside world.”
@@ -36,6 +34,7 @@ wilderness inspect bundle.zip --out shelter-copy/
 wilderness report .wilderness/reports/<inspection-id>.json
 wilderness promote .wilderness/reports/<inspection-id>.json
 wilderness verify .wilderness/reports/<inspection-id>.json
+wilderness suspicious-text-check suspicious.txt
 wilderness manifest-check bundle.zip
 ```
 
@@ -45,6 +44,8 @@ Each inspection writes:
 - a JSON inspection artifact with status, findings, provenance, policy, and promotion eligibility
 - an append-only JSONL history ledger at `.wilderness/history/<inspection-id>.jsonl`
 
+Inspection artifacts now also carry a top-level `suspicious_text` section with normalization metadata, built-in rule counts, and loaded pack provenance.
+
 The inspection artifact is immutable after `inspect`. Live trust state is derived from the history ledger, not by rewriting the original report.
 
 Promotion is never implicit. `inspect` can leave a bundle in `shelter` or `discard`, but only `promote` can move material into `safe_camp`.
@@ -53,7 +54,7 @@ Promotion is never implicit. `inspect` can leave a bundle in `shelter` or `disca
 
 Suspicious-text findings are advisory in v1. They appear in the inspection artifact and human report, but they do not block promotion by default.
 
-Suspicious-text scanning now supports adjacent-line windows and additive local TOML rule packs. Built-in rules remain on by default, and pack rules layer on top of them.
+Suspicious-text scanning now supports adjacent-line windows, normalization for evasive text forms, and additive local TOML rule packs. Built-in rules remain on by default, and pack rules layer on top of them.
 
 Supported v1 manifest file names are fixed to:
 
@@ -71,6 +72,8 @@ Supported suspicious-text policy controls are:
 - `suspicious_text_snippet_chars`
 - `suspicious_text_window_lines`
 - `suspicious_text_rule_packs`
+
+`wilderness suspicious-text-check` explains active rules for a single text file, reports normalized-only matches, and surfaces exclude-pattern suppressions for pack debugging.
 
 Rule packs are local TOML files referenced from policy. Relative pack paths resolve from the policy file directory.
 
@@ -90,6 +93,7 @@ window_lines = 1
 - `wilderness inspect`: `0` promotable, `10` completed but review-needed, `20` discard or blocked
 - `wilderness promote`: `0` promoted, `20` blocked or stale
 - `wilderness verify`: `0` promotable or promoted, `20` blocked, stale, or not yet promoted when `--require-promoted` is set
+- `wilderness suspicious-text-check`: `0` successful check or rule listing, `20` invalid input, non-text input, or invalid policy/rule pack
 - `wilderness manifest-check`: `0` valid supported manifests, `20` invalid or missing supported manifests
 - `wilderness report`: `0` on successful render
 

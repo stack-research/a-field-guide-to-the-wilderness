@@ -13,7 +13,7 @@ This checklist feeds the first implementation sprints for `wilderness`.
 
 - [x] Create `pyproject.toml` with a `wilderness` console entry point
 - [x] Scaffold `src/wilderness/`
-- [x] Add `inspect`, `report`, `promote`, `verify`, and `manifest-check` commands
+- [x] Add `inspect`, `report`, `promote`, `verify`, `suspicious-text-check`, and `manifest-check` commands
 - [x] Create a local state root at `.wilderness/`
 
 ## Intake, Shelter, And Inspection
@@ -69,3 +69,10 @@ This checklist feeds the first implementation sprints for `wilderness`.
 - [x] Support additive local TOML suspicious-text rule packs
 - [x] Allow exclude patterns and per-rule window overrides in rule packs
 - [x] Surface invalid rule packs as startup policy errors
+
+## Suspicious-Text Explainability
+
+- [x] Normalize suspicious-text matching input to catch evasive text forms
+- [x] Record suspicious-text normalization and pack provenance in inspection artifacts
+- [x] Add `suspicious-text-check` for rule listing and match explanation on single files
+- [x] Surface exclude-pattern suppressions in explainability output without changing inspection findings

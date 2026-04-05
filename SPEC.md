@@ -229,6 +229,8 @@ For v1, `suspicious_text` should remain heuristic and advisory by default. It sh
 
 The heuristic layer may grow through local signature packs, but it should stay deterministic, inspectable, and advisory unless policy semantics are deliberately widened later.
 
+Normalization may be used to catch evasive text forms, but emitted findings should still point back to raw line ranges and raw-text snippets.
+
 ## Trust States
 
 The trust model should be operational, not philosophical.
@@ -308,6 +310,9 @@ camp promote inspection.json
 # Verify that a report is still promotable or already promoted
 camp verify inspection.json
 
+# Explain suspicious-text matches for one file
+camp suspicious-text-check suspicious.txt
+
 # Show a short human report for an inspection artifact
 camp report inspection.json
 
@@ -321,6 +326,7 @@ The command names are placeholders. The important point is the workflow shape:
 - report
 - promote
 - verify
+- suspicious-text-check
 - validate
 
 ## Policy Model
@@ -339,6 +345,7 @@ Expected policy controls:
 - control-character policy
 - suspicious-text window size
 - suspicious-text local rule packs
+- suspicious-text normalization behavior
 - redaction requirements
 - promotion thresholds
 

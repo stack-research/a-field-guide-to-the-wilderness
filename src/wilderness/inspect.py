@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import tomllib
+import unicodedata
 import xml.etree.ElementTree as ET
 
 from wilderness.common import (
@@ -28,6 +29,7 @@ SUPPORTED_MANIFEST_NAMES = {
     "provenance.json",
 }
 _SUSPICIOUS_TEXT_FLAGS = re.IGNORECASE | re.MULTILINE | re.DOTALL
+SUSPICIOUS_TEXT_NORMALIZATION_VERSION = "1"
 _BUILTIN_EXCLUDE_PATTERN = (
     r"\b(do not|does not|don't|never|avoid|avoids|without|example|examples|documentation|docs|describes?|explains?)\b"
 )
@@ -77,6 +79,37 @@ class SuspiciousTextRule:
     description: str | None = None
     exclude_pattern: re.Pattern[str] | None = None
     window_lines: int | None = None
+    source: str = "builtin"
+    pack_path: str | None = None
+    pack_sha256: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SuspiciousTextPack:
+    path: str
+    sha256: str
+    rule_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class SuspiciousTextRuleSet:
+    enabled: bool
+    normalization_version: str
+    builtin_rule_count: int
+    loaded_packs: tuple[SuspiciousTextPack, ...]
+    rules: tuple[SuspiciousTextRule, ...]
+
+    @property
+    def rule_count(self) -> int:
+        if not self.enabled:
+            return 0
+        return len(self.rules)
+
+
+@dataclass(frozen=True, slots=True)
+class SuspiciousTextScanResult:
+    findings: tuple[dict, ...]
+    suppressed_matches: tuple[dict, ...]
 
 
 def _finding(
@@ -173,12 +206,16 @@ def _resolve_rule_pack_path(pack_path: str, policy: Policy) -> Path:
     return Path.cwd() / candidate
 
 
-def _load_rule_pack(pack_path: Path) -> list[SuspiciousTextRule]:
+def _load_rule_pack(pack_path: Path) -> tuple[SuspiciousTextPack, list[SuspiciousTextRule]]:
     try:
-        raw = tomllib.loads(pack_path.read_text(encoding="utf-8"))
+        raw_bytes = pack_path.read_bytes()
     except OSError as error:
         raise ValueError(f"unable to read suspicious-text rule pack {pack_path}: {error.strerror}") from error
+    try:
+        raw = tomllib.loads(raw_bytes.decode("utf-8"))
     except tomllib.TOMLDecodeError as error:
+        raise ValueError(f"invalid suspicious-text rule pack {pack_path}: {error}") from error
+    except UnicodeDecodeError as error:
         raise ValueError(f"invalid suspicious-text rule pack {pack_path}: {error}") from error
 
     if raw.get("schema_version") != 1:
@@ -190,21 +227,98 @@ def _load_rule_pack(pack_path: Path) -> list[SuspiciousTextRule]:
     for index, raw_rule in enumerate(rules, start=1):
         if not isinstance(raw_rule, dict):
             raise ValueError(f"invalid suspicious-text rule pack {pack_path}: rule {index} must be a table")
-        compiled.append(_compile_suspicious_rule(raw_rule, f"{pack_path} rule {index}"))
-    return compiled
+        compiled_rule = _compile_suspicious_rule(raw_rule, f"{pack_path} rule {index}")
+        compiled.append(
+            SuspiciousTextRule(
+                rule_id=compiled_rule.rule_id,
+                pattern=compiled_rule.pattern,
+                description=compiled_rule.description,
+                exclude_pattern=compiled_rule.exclude_pattern,
+                window_lines=compiled_rule.window_lines,
+                source="pack",
+                pack_path=str(pack_path.resolve()),
+                pack_sha256=sha256_bytes(raw_bytes),
+            )
+        )
+    pack = SuspiciousTextPack(
+        path=str(pack_path.resolve()),
+        sha256=sha256_bytes(raw_bytes),
+        rule_count=len(compiled),
+    )
+    return pack, compiled
 
 
-def load_suspicious_text_rules(policy: Policy) -> list[SuspiciousTextRule]:
-    rules = []
-    if policy.suspicious_text_enabled:
-        rules.extend(
+def load_suspicious_text_rules(policy: Policy) -> SuspiciousTextRuleSet:
+    builtin_rules = [
+        SuspiciousTextRule(
+            rule_id=compiled.rule_id,
+            pattern=compiled.pattern,
+            description=compiled.description,
+            exclude_pattern=compiled.exclude_pattern,
+            window_lines=compiled.window_lines,
+            source="builtin",
+        )
+        for compiled in (
             _compile_suspicious_rule(raw_rule, f"builtin rule {raw_rule['id']}")
             for raw_rule in _BUILTIN_RULE_DEFS
         )
+    ]
+    loaded_packs: list[SuspiciousTextPack] = []
+    pack_rules: list[SuspiciousTextRule] = []
     for pack in policy.suspicious_text_rule_packs:
         if not isinstance(pack, str) or not pack:
             raise ValueError("suspicious_text_rule_packs entries must be non-empty strings")
-        rules.extend(_load_rule_pack(_resolve_rule_pack_path(pack, policy)))
+        pack_info, compiled_rules = _load_rule_pack(_resolve_rule_pack_path(pack, policy))
+        loaded_packs.append(pack_info)
+        pack_rules.extend(compiled_rules)
+    active_rules: list[SuspiciousTextRule] = []
+    if policy.suspicious_text_enabled:
+        active_rules.extend(builtin_rules)
+        active_rules.extend(pack_rules)
+    return SuspiciousTextRuleSet(
+        enabled=policy.suspicious_text_enabled,
+        normalization_version=SUSPICIOUS_TEXT_NORMALIZATION_VERSION,
+        builtin_rule_count=len(builtin_rules) if policy.suspicious_text_enabled else 0,
+        loaded_packs=tuple(loaded_packs),
+        rules=tuple(active_rules),
+    )
+
+
+def suspicious_text_summary(rule_set: SuspiciousTextRuleSet) -> dict:
+    return {
+        "enabled": rule_set.enabled,
+        "normalization_version": rule_set.normalization_version,
+        "builtin_rule_count": rule_set.builtin_rule_count,
+        "loaded_packs": [
+            {
+                "path": pack.path,
+                "sha256": pack.sha256,
+                "rule_count": pack.rule_count,
+            }
+            for pack in rule_set.loaded_packs
+        ],
+        "rule_count": rule_set.rule_count,
+    }
+
+
+def suspicious_text_rule_listing(rule_set: SuspiciousTextRuleSet, policy: Policy) -> list[dict]:
+    rules = []
+    for rule in rule_set.rules:
+        effective_window = (
+            rule.window_lines if rule.window_lines is not None else policy.suspicious_text_window_lines
+        )
+        entry = {
+            "rule_id": rule.rule_id,
+            "source": rule.source,
+            "window_lines": max(0, effective_window),
+        }
+        if rule.description is not None:
+            entry["description"] = rule.description
+        if rule.pack_path is not None:
+            entry["pack_path"] = rule.pack_path
+        if rule.pack_sha256 is not None:
+            entry["pack_sha256"] = rule.pack_sha256
+        rules.append(entry)
     return rules
 
 
@@ -214,67 +328,172 @@ def _suspicious_text_snippet(text: str, match: re.Match[str], snippet_chars: int
     return safe_display(text[start:end])
 
 
+def _fallback_suspicious_text_snippet(text: str, snippet_chars: int) -> str:
+    return safe_display(text[:snippet_chars])
+
+
+def _normalize_suspicious_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    folded = []
+    for char in normalized:
+        category = unicodedata.category(char)
+        if category.startswith("C"):
+            continue
+        if category.startswith("P") or category.startswith("Z") or char.isspace():
+            folded.append(" ")
+            continue
+        folded.append(char)
+    return " ".join("".join(folded).split())
+
+
+def _active_window_lines(rule: SuspiciousTextRule, policy: Policy) -> int:
+    window_lines = rule.window_lines if rule.window_lines is not None else policy.suspicious_text_window_lines
+    return max(0, window_lines)
+
+
 def _scan_suspicious_text(
     decoded: str,
     rel_path: Path,
     policy: Policy,
-    rules: list[SuspiciousTextRule],
-) -> list[dict]:
-    if not policy.suspicious_text_enabled or not rules:
-        return []
+    rule_set: SuspiciousTextRuleSet,
+    include_suppressed_matches: bool = False,
+) -> SuspiciousTextScanResult:
+    if not policy.suspicious_text_enabled or not rule_set.rules:
+        return SuspiciousTextScanResult(findings=(), suppressed_matches=())
     snippet_chars = max(16, policy.suspicious_text_snippet_chars)
     findings: list[dict] = []
+    suppressed_matches: list[dict] = []
     seen: set[tuple[str, int, int, str]] = set()
+    suppressed_seen: set[tuple[str, int, int, str, str]] = set()
     lines = decoded[: policy.suspicious_text_max_bytes].splitlines()
 
     for start_index in range(len(lines)):
         if len(findings) >= policy.suspicious_text_max_findings_per_file:
             break
-        for rule in rules:
-            max_window_lines = (
-                rule.window_lines if rule.window_lines is not None else policy.suspicious_text_window_lines
-            )
-            max_window_lines = max(0, max_window_lines)
+        for rule in rule_set.rules:
+            max_window_lines = _active_window_lines(rule, policy)
             matched_rule = False
             for span in range(1, max_window_lines + 2):
                 end_index = start_index + span
                 if end_index > len(lines):
                     break
-                text = "\n".join(lines[start_index:end_index])
-                match = rule.pattern.search(text)
-                if match is None:
-                    continue
-                if rule.exclude_pattern is not None and rule.exclude_pattern.search(text):
-                    continue
+                raw_text = "\n".join(lines[start_index:end_index])
+                normalized_text = _normalize_suspicious_text(raw_text)
                 start_line = start_index + 1
                 end_line = end_index
-                snippet = _suspicious_text_snippet(text, match, snippet_chars)
-                key = (rule.rule_id, start_line, end_line, snippet)
-                if key in seen:
+                suppressed_match: dict | None = None
+                for match_mode, candidate_text in (("raw", raw_text), ("normalized", normalized_text)):
+                    match = rule.pattern.search(candidate_text)
+                    if match is None:
+                        continue
+                    if rule.exclude_pattern is not None and rule.exclude_pattern.search(candidate_text):
+                        if suppressed_match is None:
+                            suppressed_match = {
+                                "rule_id": rule.rule_id,
+                                "line": start_line,
+                                "reason": "exclude_pattern",
+                                "match_mode": match_mode,
+                            }
+                            if end_line > start_line:
+                                suppressed_match["end_line"] = end_line
+                            if rule.source == "pack" and rule.pack_path is not None:
+                                suppressed_match["pack_path"] = rule.pack_path
+                        continue
+                    snippet = (
+                        _suspicious_text_snippet(raw_text, match, snippet_chars)
+                        if match_mode == "raw"
+                        else _fallback_suspicious_text_snippet(raw_text, snippet_chars)
+                    )
+                    key = (rule.rule_id, start_line, end_line, snippet)
+                    if key in seen:
+                        matched_rule = True
+                        break
+                    seen.add(key)
+                    extra: dict[str, str | int] = {
+                        "rule_id": rule.rule_id,
+                        "line": start_line,
+                        "snippet": snippet,
+                        "match_mode": match_mode,
+                    }
+                    if end_line > start_line:
+                        extra["end_line"] = end_line
+                    findings.append(
+                        _finding(
+                            "suspicious_text",
+                            "moderate",
+                            f"suspicious text matched rule {rule.rule_id}",
+                            str(rel_path),
+                            **extra,
+                        )
+                    )
                     matched_rule = True
                     break
-                seen.add(key)
-                extra: dict[str, str | int] = {
-                    "rule_id": rule.rule_id,
-                    "line": start_line,
-                    "snippet": snippet,
-                }
-                if end_line > start_line:
-                    extra["end_line"] = end_line
-                findings.append(
-                    _finding(
-                        "suspicious_text",
-                        "moderate",
-                        f"suspicious text matched rule {rule.rule_id}",
-                        str(rel_path),
-                        **extra,
-                    )
-                )
-                matched_rule = True
-                break
+                if matched_rule:
+                    break
+                if suppressed_match is not None:
+                    if include_suppressed_matches:
+                        suppression_key = (
+                            rule.rule_id,
+                            start_line,
+                            end_line,
+                            suppressed_match["reason"],
+                        )
+                        if suppression_key not in suppressed_seen:
+                            suppressed_seen.add(suppression_key)
+                            suppressed_matches.append(suppressed_match)
+                    matched_rule = True
+                    break
             if matched_rule and len(findings) >= policy.suspicious_text_max_findings_per_file:
                 break
-    return findings
+    return SuspiciousTextScanResult(
+        findings=tuple(findings),
+        suppressed_matches=tuple(suppressed_matches),
+    )
+
+
+def suspicious_text_check(
+    path: str,
+    policy: Policy,
+    rule_set: SuspiciousTextRuleSet | None = None,
+) -> dict:
+    source = Path(path).expanduser().resolve()
+    if not source.exists():
+        raise ValueError(f"input does not exist: {source}")
+    if source.is_dir():
+        raise ValueError("suspicious-text-check only accepts a single file")
+
+    from wilderness.intake import identify_input_type
+
+    artifact_type = identify_input_type(source)
+    if artifact_type in {"zip", "tar"}:
+        raise ValueError("suspicious-text-check does not inspect archives")
+
+    data = read_bytes(source)
+    if is_likely_binary(data):
+        raise ValueError("suspicious-text-check only accepts decoded text files")
+
+    decoded = data.decode("utf-8", errors="replace")
+    if rule_set is None:
+        rule_set = load_suspicious_text_rules(policy)
+    scan = _scan_suspicious_text(
+        decoded,
+        source.name,
+        policy,
+        rule_set,
+        include_suppressed_matches=True,
+    )
+    return {
+        "input": str(source),
+        "policy": policy.snapshot(),
+        "normalization": {
+            "enabled": rule_set.enabled,
+            "version": rule_set.normalization_version,
+        },
+        "packs": suspicious_text_summary(rule_set)["loaded_packs"],
+        "rules": suspicious_text_rule_listing(rule_set, policy),
+        "findings": list(scan.findings),
+        "suppressed_matches": list(scan.suppressed_matches),
+    }
 
 
 def inspect_bundle(
@@ -282,7 +501,7 @@ def inspect_bundle(
     unpacked: UnpackResult,
     policy: Policy,
     history_path: Path | None = None,
-    suspicious_text_rules: list[SuspiciousTextRule] | None = None,
+    suspicious_text_rules: SuspiciousTextRuleSet | None = None,
 ) -> dict:
     if suspicious_text_rules is None:
         suspicious_text_rules = load_suspicious_text_rules(policy)
@@ -343,7 +562,9 @@ def inspect_bundle(
                     )
 
             if rel_path.suffix.lower() in TEXT_EXTENSIONS | {""}:
-                findings.extend(_scan_suspicious_text(decoded, rel_path, policy, suspicious_text_rules))
+                findings.extend(
+                    _scan_suspicious_text(decoded, rel_path, policy, suspicious_text_rules).findings
+                )
 
             if _is_supported_manifest(rel_path):
                 manifest_paths.append(str(rel_path))
@@ -394,6 +615,7 @@ def inspect_bundle(
         "history_path": str(history_path.resolve()) if history_path is not None else None,
         "inspection_id": intake.inspection_id,
         "received_at": intake.provenance["received_at"],
+        "suspicious_text": suspicious_text_summary(suspicious_text_rules),
         "provenance": {
             **intake.provenance,
             "normalized_path": str(unpacked.normalized_output_path),

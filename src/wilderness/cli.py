@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 from pathlib import Path
 
-from wilderness.inspect import inspect_bundle, load_suspicious_text_rules, manifest_check
+from wilderness.inspect import (
+    inspect_bundle,
+    load_suspicious_text_rules,
+    manifest_check,
+    suspicious_text_check,
+    suspicious_text_rule_listing,
+)
 from wilderness.intake import land_input
 from wilderness.policy import load_policy
 from wilderness.provenance import build_history_event, inspection_history_path
@@ -64,12 +71,18 @@ def _inspect_exit_code(artifact: dict) -> int:
     return EXIT_REVIEW
 
 
-def cmd_inspect(args: argparse.Namespace) -> int:
-    policy = load_policy(args.policy)
+def _load_rule_set_or_error(policy: object):
     try:
-        suspicious_text_rules = load_suspicious_text_rules(policy)
+        return load_suspicious_text_rules(policy)
     except ValueError as error:
         print(f"policy error: {error}", file=sys.stderr)
+        return None
+
+
+def cmd_inspect(args: argparse.Namespace) -> int:
+    policy = load_policy(args.policy)
+    suspicious_text_rules = _load_rule_set_or_error(policy)
+    if suspicious_text_rules is None:
         return EXIT_BLOCKED
     intake, state = land_input(args.input, policy)
     history_path = inspection_history_path(state.root, intake.inspection_id)
@@ -196,6 +209,107 @@ def cmd_manifest_check(args: argparse.Namespace) -> int:
     return EXIT_OK if result["valid"] else EXIT_BLOCKED
 
 
+def _render_suspicious_text_check(result: dict) -> str:
+    lines = [
+        f"input: {result['input']}",
+        f"normalization_enabled: {result['normalization']['enabled']}",
+        f"normalization_version: {result['normalization']['version']}",
+        f"active_rules: {len(result['rules'])}",
+    ]
+    if result["packs"]:
+        lines.append("loaded_packs:")
+        for pack in result["packs"]:
+            lines.append(
+                f"  - {pack['path']} sha256={pack['sha256']} rules={pack['rule_count']}"
+            )
+    else:
+        lines.append("loaded_packs: none")
+    if result["findings"]:
+        lines.append("findings:")
+        for finding in result["findings"]:
+            end_line = finding.get("end_line")
+            line_display = (
+                str(finding["line"])
+                if end_line in (None, finding["line"])
+                else f"{finding['line']}-{end_line}"
+            )
+            mode = f" {finding['match_mode']}" if finding.get("match_mode") == "normalized" else ""
+            lines.append(
+                f"  - {finding['rule_id']}{mode} line={line_display} :: {finding['snippet']}"
+            )
+    else:
+        lines.append("findings: none")
+    if result["suppressed_matches"]:
+        lines.append("suppressed_matches:")
+        for match in result["suppressed_matches"]:
+            end_line = match.get("end_line")
+            line_display = (
+                str(match["line"])
+                if end_line in (None, match["line"])
+                else f"{match['line']}-{end_line}"
+            )
+            mode = f" {match['match_mode']}" if match.get("match_mode") else ""
+            lines.append(
+                f"  - {match['rule_id']}{mode} line={line_display} reason={match['reason']}"
+            )
+    else:
+        lines.append("suppressed_matches: none")
+    return "\n".join(lines)
+
+
+def cmd_suspicious_text_check(args: argparse.Namespace) -> int:
+    policy = load_policy(args.policy)
+    rule_set = _load_rule_set_or_error(policy)
+    if rule_set is None:
+        return EXIT_BLOCKED
+    if args.list_rules:
+        payload = {
+            "input": str(Path(args.input).expanduser().resolve()),
+            "policy": policy.snapshot(),
+            "normalization": {
+                "enabled": rule_set.enabled,
+                "version": rule_set.normalization_version,
+            },
+            "packs": [
+                {"path": pack.path, "sha256": pack.sha256, "rule_count": pack.rule_count}
+                for pack in rule_set.loaded_packs
+            ],
+            "rules": suspicious_text_rule_listing(rule_set, policy),
+            "findings": [],
+            "suppressed_matches": [],
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"input: {payload['input']}")
+            print(f"normalization_enabled: {payload['normalization']['enabled']}")
+            print(f"normalization_version: {payload['normalization']['version']}")
+            print(f"active_rules: {len(payload['rules'])}")
+            if payload["packs"]:
+                print("loaded_packs:")
+                for pack in payload["packs"]:
+                    print(f"  - {pack['path']} sha256={pack['sha256']} rules={pack['rule_count']}")
+            else:
+                print("loaded_packs: none")
+            print("rules:")
+            for rule in payload["rules"]:
+                pack_display = f" pack={rule['pack_path']}" if "pack_path" in rule else ""
+                print(
+                    f"  - {rule['rule_id']} source={rule['source']} window_lines={rule['window_lines']}{pack_display}"
+                )
+        return EXIT_OK
+    try:
+        result = suspicious_text_check(args.input, policy, rule_set=rule_set)
+    except ValueError as error:
+        print(f"suspicious-text-check error: {error}", file=sys.stderr)
+        return EXIT_BLOCKED
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(_render_suspicious_text_check(result))
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wilderness")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -225,6 +339,13 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("report")
     verify_parser.add_argument("--require-promoted", action="store_true")
     verify_parser.set_defaults(func=cmd_verify)
+
+    suspicious_parser = subparsers.add_parser("suspicious-text-check")
+    suspicious_parser.add_argument("input")
+    suspicious_parser.add_argument("--policy")
+    suspicious_parser.add_argument("--json", action="store_true")
+    suspicious_parser.add_argument("--list-rules", action="store_true")
+    suspicious_parser.set_defaults(func=cmd_suspicious_text_check)
 
     return parser
 
