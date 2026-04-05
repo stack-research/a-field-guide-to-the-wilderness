@@ -260,6 +260,28 @@ class WildernessCliTests(unittest.TestCase):
         self.assertEqual(payload["origin"], "live_safe_camp")
         self.assertEqual(payload["path"], promoted_target)
 
+    def test_promote_records_effective_source_attestation(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+        policy = self.write_manifest_fallback_policy()
+
+        inspect = self.run_cli("inspect", str(copied), "--json", "--policy", str(policy))
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+
+        promote = self.run_cli("promote", str(report_path), "--policy", str(policy))
+        self.assertEqual(promote.returncode, 0, promote.stdout + promote.stderr)
+
+        history = self.load_history(artifact)
+        promoted_event = history[-1]
+        self.assertEqual(promoted_event["event_type"], "promoted")
+        self.assertEqual(promoted_event["payload"]["resolved_from"], "shelter")
+        self.assertEqual(promoted_event["payload"]["source_path"], artifact["effective_source"]["path"])
+        self.assertEqual(promoted_event["payload"]["source_sha256"], artifact["effective_source"]["sha256"])
+        self.assertEqual(promoted_event["payload"]["target_sha256"], artifact["effective_source"]["sha256"])
+        self.assertEqual(promoted_event["payload"]["file_count"], artifact["effective_source"]["file_count"])
+
     def test_source_mode_promoted_requires_live_safe_camp(self) -> None:
         sample = ROOT / "data" / "benign" / "sample.json"
         copied = self.cwd / "sample.json"
@@ -470,6 +492,96 @@ class WildernessCliTests(unittest.TestCase):
         result = self.run_cli("source", str(report_path))
         self.assertEqual(result.returncode, 20)
         self.assertIn("required redacted derivative is missing", result.stdout)
+
+    def test_verify_require_promoted_detects_changed_safe_camp_file(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+        policy = self.write_manifest_fallback_policy()
+
+        inspect = self.run_cli("inspect", str(copied), "--json", "--policy", str(policy))
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+        promote = self.run_cli("promote", str(report_path), "--policy", str(policy))
+        self.assertEqual(promote.returncode, 0, promote.stdout + promote.stderr)
+        target = self.cwd / Path(promote.stdout.strip().split("promoted_to: ", 1)[1])
+        (target / "sample.json").write_text('{"name":"tampered"}\n', encoding="utf-8")
+
+        verify = self.run_cli("verify", str(report_path), "--require-promoted")
+        self.assertEqual(verify.returncode, 20)
+        self.assertIn("content changed", verify.stdout)
+
+    def test_verify_require_promoted_detects_missing_safe_camp_file(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+        policy = self.write_manifest_fallback_policy()
+
+        inspect = self.run_cli("inspect", str(copied), "--json", "--policy", str(policy))
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+        promote = self.run_cli("promote", str(report_path), "--policy", str(policy))
+        self.assertEqual(promote.returncode, 0, promote.stdout + promote.stderr)
+        target = self.cwd / Path(promote.stdout.strip().split("promoted_to: ", 1)[1])
+        (target / "sample.json").unlink()
+
+        verify = self.run_cli("verify", str(report_path), "--require-promoted")
+        self.assertEqual(verify.returncode, 20)
+        self.assertIn("missing file", verify.stdout)
+
+    def test_verify_require_promoted_detects_unexpected_safe_camp_file(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+        policy = self.write_manifest_fallback_policy()
+
+        inspect = self.run_cli("inspect", str(copied), "--json", "--policy", str(policy))
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+        promote = self.run_cli("promote", str(report_path), "--policy", str(policy))
+        self.assertEqual(promote.returncode, 0, promote.stdout + promote.stderr)
+        target = self.cwd / Path(promote.stdout.strip().split("promoted_to: ", 1)[1])
+        (target / "extra.txt").write_text("extra\n", encoding="utf-8")
+
+        verify = self.run_cli("verify", str(report_path), "--require-promoted")
+        self.assertEqual(verify.returncode, 20)
+        self.assertIn("unexpected file", verify.stdout)
+
+    def test_source_mode_promoted_fails_on_drifted_safe_camp_tree(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+        policy = self.write_manifest_fallback_policy()
+
+        inspect = self.run_cli("inspect", str(copied), "--json", "--policy", str(policy))
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+        promote = self.run_cli("promote", str(report_path), "--policy", str(policy))
+        self.assertEqual(promote.returncode, 0, promote.stdout + promote.stderr)
+        target = self.cwd / Path(promote.stdout.strip().split("promoted_to: ", 1)[1])
+        (target / "sample.json").write_text('{"name":"tampered"}\n', encoding="utf-8")
+
+        result = self.run_cli("source", str(report_path), "--mode", "promoted")
+        self.assertEqual(result.returncode, 20)
+        self.assertIn("content changed", result.stdout)
+
+    def test_source_auto_blocks_on_drifted_safe_camp_tree(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+        policy = self.write_manifest_fallback_policy()
+
+        inspect = self.run_cli("inspect", str(copied), "--json", "--policy", str(policy))
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+        promote = self.run_cli("promote", str(report_path), "--policy", str(policy))
+        self.assertEqual(promote.returncode, 0, promote.stdout + promote.stderr)
+        target = self.cwd / Path(promote.stdout.strip().split("promoted_to: ", 1)[1])
+        (target / "sample.json").write_text('{"name":"tampered"}\n', encoding="utf-8")
+
+        result = self.run_cli("source", str(report_path))
+        self.assertEqual(result.returncode, 20)
+        self.assertIn("content changed", result.stdout)
 
     def test_discard_retention_can_copy_quarantine_input(self) -> None:
         bundle = self.cwd / "traversal.zip"

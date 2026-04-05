@@ -24,7 +24,7 @@ from wilderness.report import (
     render_report,
     write_report,
 )
-from wilderness.common import sha256_directory
+from wilderness.common import safe_display, sha256_directory, sha256_file
 from wilderness.unpack import build_shelter
 
 EXIT_OK = 0
@@ -56,6 +56,27 @@ def _source_resolution(
 
 
 def _resolve_report_source(artifact: dict) -> dict:
+    effective_source = artifact.get("effective_source")
+    if effective_source:
+        path = effective_source.get("path")
+        if path is None:
+            return _source_resolution(
+                available=False,
+                resolved_from=effective_source.get("resolved_from"),
+                origin="report_state",
+                path=None,
+                sha256=effective_source.get("sha256"),
+                error="effective source is unavailable",
+            )
+        return _source_resolution(
+            available=True,
+            resolved_from=effective_source.get("resolved_from"),
+            origin="report_state",
+            path=Path(path),
+            sha256=effective_source.get("sha256"),
+            error=None,
+        )
+
     redaction = artifact.get("redaction", {})
     if redaction.get("required"):
         path = redaction.get("path")
@@ -98,16 +119,105 @@ def _resolve_report_source(artifact: dict) -> dict:
     )
 
 
+def _effective_file_hashes(artifact: dict) -> dict[str, str]:
+    effective_source = artifact.get("effective_source", {})
+    effective_from = effective_source.get("resolved_from")
+    files: dict[str, str] = {}
+    for file_record in artifact.get("files", []):
+        expected_sha256 = file_record.get("effective_sha256")
+        if expected_sha256 is None:
+            if effective_from == "redacted" and "redacted_sha256" in file_record:
+                expected_sha256 = file_record["redacted_sha256"]
+            else:
+                expected_sha256 = file_record.get("normalized_sha256")
+        if expected_sha256 is not None:
+            files[file_record["path"]] = expected_sha256
+    return files
+
+
+def _directory_file_hashes(root: Path) -> dict[str, str]:
+    return {
+        str(path.relative_to(root)): sha256_file(path)
+        for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file())
+    }
+
+
+def _latest_promoted_event(artifact: dict) -> dict | None:
+    return next(
+        (event for event in reversed(load_history_for_report(artifact)) if event["event_type"] == "promoted"),
+        None,
+    )
+
+
+def _promoted_target_exists(artifact: dict) -> bool:
+    target_path = _promoted_target_path(artifact)
+    return target_path is not None and Path(target_path).exists()
+
+
+def _promoted_source_error(artifact: dict) -> str | None:
+    promoted_event = _latest_promoted_event(artifact)
+    if promoted_event is None:
+        return "promoted safe-camp copy is missing"
+    target_path = promoted_event["payload"].get("target_path")
+    if not target_path:
+        return "promoted safe-camp copy is missing"
+    promoted_root = Path(target_path)
+    if not promoted_root.exists():
+        return "promoted safe-camp copy is missing"
+
+    expected_files = _effective_file_hashes(artifact)
+    current_files = _directory_file_hashes(promoted_root)
+
+    missing_paths = sorted(set(expected_files) - set(current_files))
+    if missing_paths:
+        return f"promoted safe-camp copy is stale: missing file {safe_display(missing_paths[0])}"
+
+    extra_paths = sorted(set(current_files) - set(expected_files))
+    if extra_paths:
+        return f"promoted safe-camp copy is stale: unexpected file {safe_display(extra_paths[0])}"
+
+    changed_paths = [
+        relative_path
+        for relative_path in sorted(expected_files)
+        if current_files[relative_path] != expected_files[relative_path]
+    ]
+    if changed_paths:
+        return f"promoted safe-camp copy is stale: content changed for {safe_display(changed_paths[0])}"
+
+    expected_digest = (
+        promoted_event["payload"].get("target_sha256")
+        or promoted_event["payload"].get("source_sha256")
+        or artifact.get("effective_source", {}).get("sha256")
+    )
+    if expected_digest is None:
+        return "promoted safe-camp attestation is incomplete"
+
+    current_digest = sha256_directory(promoted_root)
+    if current_digest != expected_digest:
+        return "promoted safe-camp copy is stale or contents changed"
+
+    expected_file_count = (
+        promoted_event["payload"].get("file_count")
+        or artifact.get("effective_source", {}).get("file_count")
+    )
+    if expected_file_count is not None and len(current_files) != expected_file_count:
+        return "promoted safe-camp copy is stale or contents changed"
+    return None
+
+
 def _resolve_source(artifact: dict, mode: str = "auto") -> dict:
     if mode == "auto":
         promoted = _resolve_source(artifact, "promoted")
         if promoted["available"]:
             return promoted
+        if _promoted_target_exists(artifact):
+            return promoted
         return _resolve_source(artifact, "effective")
     if mode == "effective":
         return _resolve_report_source(artifact)
     if mode == "promoted":
-        target_path = _promoted_target_path(artifact)
+        promoted_event = _latest_promoted_event(artifact)
+        target_path = promoted_event["payload"].get("target_path") if promoted_event is not None else None
         if target_path is None:
             return _source_resolution(
                 available=False,
@@ -118,14 +228,15 @@ def _resolve_source(artifact: dict, mode: str = "auto") -> dict:
                 error="promoted safe-camp copy is missing",
             )
         path = Path(target_path)
-        if not path.exists():
+        promoted_error = _promoted_source_error(artifact)
+        if promoted_error is not None:
             return _source_resolution(
                 available=False,
                 resolved_from="promoted",
                 origin="live_safe_camp",
                 path=path,
                 sha256=None,
-                error="promoted safe-camp copy is missing",
+                error=promoted_error,
             )
         return _source_resolution(
             available=True,
@@ -228,10 +339,10 @@ def _current_blocking_reasons(artifact: dict) -> list[str]:
 
 
 def _promoted_target_path(artifact: dict) -> str | None:
-    for event in reversed(load_history_for_report(artifact)):
-        if event["event_type"] == "promoted":
-            return event["payload"].get("target_path")
-    return None
+    promoted_event = _latest_promoted_event(artifact)
+    if promoted_event is None:
+        return None
+    return promoted_event["payload"].get("target_path")
 
 
 def _is_currently_promoted(artifact: dict) -> bool:
@@ -379,12 +490,33 @@ def cmd_promote(args: argparse.Namespace) -> int:
     if target.exists():
         shutil.rmtree(target)
     shutil.copytree(source_path, target)
+    target_digest = sha256_directory(target)
+    if target_digest != resolution["sha256"]:
+        shutil.rmtree(target)
+        reasons = ["promoted safe-camp copy did not match effective source"]
+        append_history_event(
+            history_path,
+            build_history_event(
+                artifact["inspection_id"],
+                "promotion_blocked",
+                {"reasons": reasons},
+            ),
+        )
+        print("promotion blocked: " + ", ".join(reasons))
+        return EXIT_BLOCKED
     append_history_event(
         history_path,
         build_history_event(
             artifact["inspection_id"],
             "promoted",
-            {"target_path": str(target.resolve())},
+            {
+                "target_path": str(target.resolve()),
+                "resolved_from": resolution["resolved_from"],
+                "source_path": resolution["path"],
+                "source_sha256": resolution["sha256"],
+                "target_sha256": target_digest,
+                "file_count": artifact.get("effective_source", {}).get("file_count", len(artifact.get("files", []))),
+            },
         ),
     )
     print(f"promoted_to: {target}")
@@ -444,19 +576,23 @@ def cmd_source(args: argparse.Namespace) -> int:
 
 def cmd_verify(args: argparse.Namespace) -> int:
     artifact = load_report(args.report)
-    promoted = _is_currently_promoted(artifact)
+    promoted_resolution = _resolve_source(artifact, "promoted")
+    promoted = promoted_resolution["available"]
     promotable = artifact["promotion"]["eligible"] and not _current_blocking_reasons(artifact)
 
     if args.require_promoted:
         if promoted:
             print("verified: promoted")
             return EXIT_OK
-        print("verification failed: artifact is not in safe camp")
+        print("verification failed: " + (promoted_resolution["error"] or "artifact is not in safe camp"))
         return EXIT_BLOCKED
 
     if promoted:
         print("verified: promoted")
         return EXIT_OK
+    if _promoted_target_exists(artifact):
+        print("verification failed: " + (promoted_resolution["error"] or "artifact is not in safe camp"))
+        return EXIT_BLOCKED
     if promotable:
         print("verified: promotable")
         return EXIT_OK

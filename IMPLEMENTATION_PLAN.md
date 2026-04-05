@@ -124,3 +124,11 @@ This checklist feeds the first implementation sprints for `wilderness`.
 - [x] Prefer live safe-camp output in auto mode, with explicit `promoted`, `redacted`, and `shelter` overrides
 - [x] Add machine-readable JSON output and directory export support
 - [x] Keep `promote` and `verify` aligned with the shared effective-source resolver
+
+## Effective File Provenance And Safe-Camp Drift Detection
+
+- [x] Record top-level effective-source attestation in the inspection artifact
+- [x] Record per-file effective hashes for downstream trust decisions
+- [x] Enrich promoted history events with source and target digests
+- [x] Make `verify --require-promoted` fail on changed, missing, or extra safe-camp files
+- [x] Make `source` reject drifted promoted trees instead of silently falling back

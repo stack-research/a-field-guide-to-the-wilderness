@@ -191,6 +191,7 @@ Recommended top-level inspection artifact fields:
 - `input_ref`
 - `inspection_id`
 - `received_at`
+- `effective_source`
 - `history_path`
 - `discard`
 - `manifest`
@@ -311,6 +312,16 @@ The tool should also expose the effective downstream-ready tree directly. By def
 - normalized shelter output otherwise
 
 Operators and downstream tools should be able to ask for that resolved source explicitly and export a copy without re-implementing trust-path logic.
+
+The inspection artifact should also attest that effective source directly:
+
+- resolved source kind
+- effective tree path
+- effective tree digest
+- effective file count
+- per-file effective hashes for downstream integrity checks
+
+Once material is promoted, the system should treat safe camp as an attested copy, not merely a destination that exists. A promoted tree with changed contents, missing files, or unexpected files should fail downstream verification.
 
 ## Redaction and Privacy
 

@@ -819,6 +819,7 @@ def inspect_bundle(
 
     redaction_path = None
     redaction_digest = None
+    normalized_digest = sha256_directory(unpacked.normalized_output_path)
     if policy.redaction.enabled and redaction_applied and redacted_root is not None:
         redaction_path = _materialize_redacted_tree(
             unpacked.normalized_output_path,
@@ -826,6 +827,18 @@ def inspect_bundle(
             redacted_files,
         )
         redaction_digest = sha256_directory(redaction_path)
+
+    effective_resolved_from = "redacted" if policy.redaction_required and redaction_path is not None else "shelter"
+    effective_path = redaction_path if effective_resolved_from == "redacted" else unpacked.normalized_output_path
+    effective_digest = redaction_digest if effective_resolved_from == "redacted" else normalized_digest
+    effective_uses_redacted = effective_resolved_from == "redacted"
+
+    for file_record in file_records:
+        file_record["effective_redacted"] = effective_uses_redacted
+        if effective_uses_redacted and "redacted_sha256" in file_record:
+            file_record["effective_sha256"] = file_record["redacted_sha256"]
+        else:
+            file_record["effective_sha256"] = file_record["normalized_sha256"]
 
     artifact = {
         "artifact_type": intake.artifact_type,
@@ -837,6 +850,12 @@ def inspect_bundle(
         "history_path": str(history_path.resolve()) if history_path is not None else None,
         "inspection_id": intake.inspection_id,
         "received_at": intake.provenance["received_at"],
+        "effective_source": {
+            "resolved_from": effective_resolved_from,
+            "path": str(effective_path.resolve()),
+            "sha256": effective_digest,
+            "file_count": len(file_records),
+        },
         "suspicious_text": {
             **suspicious_text_summary(suspicious_text_rules),
             "blocking_enabled": bool(
@@ -872,7 +891,7 @@ def inspect_bundle(
         "provenance": {
             **intake.provenance,
             "normalized_path": str(unpacked.normalized_output_path),
-            "normalized_sha256": sha256_directory(unpacked.normalized_output_path),
+            "normalized_sha256": normalized_digest,
             "manifest_paths": manifest_paths,
             "redaction_applied": redaction_applied,
         },

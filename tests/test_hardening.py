@@ -151,6 +151,55 @@ class WildernessHardeningTests(unittest.TestCase):
         self.assertIn("redacted_sha256", artifact["files"][0])
         self.assertTrue(artifact["provenance"]["redaction_applied"])
 
+    def test_effective_source_attestation_uses_shelter_hashes_by_default(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+        policy = self.write_manifest_fallback_policy()
+
+        inspect, artifact = self.inspect_json(copied, "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 0)
+        self.assertEqual(artifact["effective_source"]["resolved_from"], "shelter")
+        self.assertEqual(
+            artifact["effective_source"]["sha256"],
+            artifact["provenance"]["normalized_sha256"],
+        )
+        self.assertEqual(artifact["effective_source"]["file_count"], len(artifact["files"]))
+        self.assertEqual(artifact["files"][0]["effective_sha256"], artifact["files"][0]["normalized_sha256"])
+        self.assertFalse(artifact["files"][0]["effective_redacted"])
+
+    def test_effective_source_attestation_uses_redacted_hashes_when_required(self) -> None:
+        fixture = ROOT / "data" / "hostile" / "redaction_case" / "notes.txt"
+        copied = self.cwd / "notes.txt"
+        shutil.copy2(fixture, copied)
+        policy = self.cwd / "policy.toml"
+        policy.write_text(
+            textwrap.dedent(
+                """
+                manifest_free_fallback_enabled = true
+                redaction_required = true
+
+                [redaction]
+                enabled = true
+                redact_paths = true
+                redact_secrets = true
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        inspect, artifact = self.inspect_json(copied, "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 0)
+        self.assertEqual(artifact["effective_source"]["resolved_from"], "redacted")
+        self.assertEqual(
+            artifact["effective_source"]["sha256"],
+            artifact["redaction"]["normalized_sha256"],
+        )
+        self.assertEqual(artifact["effective_source"]["file_count"], len(artifact["files"]))
+        self.assertEqual(artifact["files"][0]["effective_sha256"], artifact["files"][0]["redacted_sha256"])
+        self.assertTrue(artifact["files"][0]["effective_redacted"])
+
     def test_small_fixture_fanout_can_trigger_file_count_limit(self) -> None:
         fixture = ROOT / "data" / "hostile" / "fanout_case"
         copied = self.cwd / fixture.name

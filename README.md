@@ -53,6 +53,8 @@ Inspection artifacts also carry a top-level `manifest` section with manifest pre
 
 Inspection artifacts now also carry a top-level `redaction` section with whether redaction was enabled, required, applied, and materialized as a parallel derivative.
 
+Inspection artifacts now also carry a top-level `effective_source` section with the attested downstream source kind, path, digest, and file count, and each file record carries an `effective_sha256` for the bytes downstream trust decisions are based on.
+
 The inspection artifact is immutable after `inspect`. Live trust state is derived from the history ledger, not by rewriting the original report.
 
 Promotion is never implicit. `inspect` can leave a bundle in `shelter` or `discard`, but only `promote` can move material into `safe_camp`.
@@ -78,7 +80,11 @@ For embedded manifests, `raw_sha256` is checked against the bundle payload the m
 
 `wilderness verify` is the downstream gate. It exits `0` only when a report is still promotable or already promoted. `--require-promoted` insists on a live `safe_camp` copy.
 
+When a bundle has already been promoted, `verify --require-promoted` now checks that the live safe-camp tree still matches the attested promoted digest and per-file effective hashes. Changed, missing, or extra files fail verification.
+
 `wilderness source` resolves the exact downstream-ready tree the system would use. By default it prefers a live promoted `safe_camp` copy when one exists, otherwise it falls back to the effective report-derived source: required redacted derivative first, normalized shelter output otherwise. `--mode` can force `promoted`, `redacted`, or `shelter`, `--json` makes the result machine-readable, and `--out` copies the resolved tree to a chosen destination.
+
+`wilderness source` only prefers promoted output when the promoted safe-camp copy still matches its attestation. A drifted promoted tree blocks resolution instead of silently falling back to shelter or redacted state.
 
 Suspicious-text findings are advisory by default. A local policy may also turn all suspicious-text findings, or selected suspicious-text `rule_id` values, into promotion blockers without changing the detector itself.
 
