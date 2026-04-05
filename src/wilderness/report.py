@@ -91,6 +91,13 @@ def render_report(report: dict) -> str:
                 lines.append(f"manifest_validated: {manifest.get('validated', False)}")
                 if manifest.get("schema_version") is not None:
                     lines.append(f"manifest_schema_version: {manifest['schema_version']}")
+    if report.get("redaction"):
+        redaction = report["redaction"]
+        if redaction.get("enabled") or redaction.get("required"):
+            lines.append(f"redaction_applied: {redaction.get('applied', False)}")
+            lines.append(f"redaction_available: {redaction.get('available', False)}")
+            if redaction.get("path") is not None:
+                lines.append(f"redaction_path: {safe_display(redaction['path'])}")
     if report.get("discard", {}).get("retained"):
         lines.append(f"discard_retained: {report['discard']['retained']}")
         lines.append(f"discard_path: {safe_display(report['discard']['path'])}")

@@ -50,6 +50,9 @@ class WildernessPolicyTests(unittest.TestCase):
         policy.write_text(
             textwrap.dedent(
                 """
+                manifest_free_fallback_enabled = true
+                redaction_required = false
+
                 [redaction]
                 enabled = true
                 redact_paths = true
@@ -61,10 +64,85 @@ class WildernessPolicyTests(unittest.TestCase):
         )
 
         inspect = self.run_cli("inspect", str(sample), "--json", "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 0, inspect.stderr)
         artifact = json.loads(inspect.stdout)
         file_record = artifact["files"][0]
+        self.assertTrue(file_record["redacted"])
         self.assertIn("redacted_sha256", file_record)
         self.assertTrue(artifact["provenance"]["redaction_applied"])
+        self.assertTrue(artifact["redaction"]["enabled"])
+        self.assertTrue(artifact["redaction"]["applied"])
+        self.assertTrue(artifact["redaction"]["available"])
+        redacted_path = Path(artifact["redaction"]["path"])
+        self.assertTrue(redacted_path.exists())
+        self.assertEqual(
+            (redacted_path / "sample.txt").read_text(encoding="utf-8"),
+            "token=<redacted>\npath=<redacted-path>\n",
+        )
+
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+        report = self.run_cli("report", str(report_path))
+        self.assertIn("redaction_applied: True", report.stdout)
+        self.assertIn("redaction_available: True", report.stdout)
+        self.assertIn("redaction_path:", report.stdout)
+
+    def test_redaction_without_changes_does_not_create_derivative(self) -> None:
+        sample = self.cwd / "sample.txt"
+        sample.write_text("plain text only\n", encoding="utf-8")
+        policy = self.cwd / "policy.toml"
+        policy.write_text(
+            textwrap.dedent(
+                """
+                manifest_free_fallback_enabled = true
+
+                [redaction]
+                enabled = true
+                redact_paths = true
+                redact_secrets = true
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        inspect = self.run_cli("inspect", str(sample), "--json", "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 0, inspect.stderr)
+        artifact = json.loads(inspect.stdout)
+        self.assertFalse(artifact["redaction"]["applied"])
+        self.assertFalse(artifact["redaction"]["available"])
+        self.assertIsNone(artifact["redaction"]["path"])
+        self.assertIsNone(artifact["redaction"]["normalized_sha256"])
+        self.assertFalse(artifact["files"][0]["redacted"])
+
+    def test_redaction_required_still_blocks_when_no_changes_are_made(self) -> None:
+        sample = self.cwd / "sample.txt"
+        sample.write_text("plain text only\n", encoding="utf-8")
+        policy = self.cwd / "policy.toml"
+        policy.write_text(
+            textwrap.dedent(
+                """
+                manifest_free_fallback_enabled = true
+                redaction_required = true
+
+                [redaction]
+                enabled = true
+                redact_paths = true
+                redact_secrets = true
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        inspect = self.run_cli("inspect", str(sample), "--json", "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 10, inspect.stderr)
+        artifact = json.loads(inspect.stdout)
+        self.assertFalse(artifact["promotion"]["eligible"])
+        self.assertIn(
+            "redaction required by policy but no changes were applied",
+            artifact["promotion"]["blocking_reasons"],
+        )
+        self.assertFalse(artifact["redaction"]["available"])
 
     def test_nested_archive_depth_is_enforced(self) -> None:
         import zipfile

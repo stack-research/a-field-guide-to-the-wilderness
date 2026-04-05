@@ -100,3 +100,11 @@ This checklist feeds the first implementation sprints for `wilderness`.
 - [x] Block malformed manifests and invalid manifest claims during `inspect` and `manifest-check`
 - [x] Record manifest validation status, schema version, and normalized claims in the inspection artifact
 - [x] Tighten manifest provenance comparison beyond simple presence checks
+
+## Materialized Redaction Derivatives
+
+- [x] Add a `.wilderness/redacted/` state path for inspect-time derivatives
+- [x] Materialize a full redacted tree when enabled redaction actually changes content
+- [x] Record redaction availability and derivative hashes in the inspection artifact
+- [x] Keep shelter output unchanged and route promotion to the redacted derivative only when required
+- [x] Make `verify` follow the effective downstream source for required redaction cases

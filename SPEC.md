@@ -194,6 +194,7 @@ Recommended top-level inspection artifact fields:
 - `history_path`
 - `discard`
 - `manifest`
+- `redaction`
 - `provenance`
 - `suspicious_text`
 - `files`
@@ -301,6 +302,8 @@ When a manifest is embedded inside the inspected artifact, `raw_sha256` should d
 
 Promotion should never happen implicitly because a parser "handled" the content.
 
+If redaction is enabled and changes content, the system should materialize a full redacted derivative beside shelter output instead of mutating shelter in place. When policy requires redaction, promotion and downstream verification should follow that derivative rather than the original shelter tree.
+
 ## Redaction and Privacy
 
 The tool should treat privacy and safety as adjacent concerns.
@@ -311,12 +314,15 @@ V1 redaction goals:
 - remove or mask machine-specific paths if configured
 - preserve enough structure for downstream tools to work
 - record whether redaction changed content hashes
+- make a downstream-safe redacted derivative available when redaction actually changes content
 
 The tool should distinguish:
 
 - **raw hash** of the original material
 - **normalized hash** after safe unpacking / normalization
 - **redacted hash** after privacy-preserving transformation
+
+The original shelter output should remain intact. Redaction should produce a parallel derivative, not an in-place rewrite, so operators can inspect both the normalized and redacted views explicitly.
 
 ## CLI Shape
 

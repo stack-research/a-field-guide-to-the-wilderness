@@ -174,6 +174,117 @@ class WildernessCliTests(unittest.TestCase):
         verify = self.run_cli("verify", str(self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"))
         self.assertEqual(verify.returncode, 20)
 
+    def test_promote_keeps_normal_shelter_when_redaction_is_optional(self) -> None:
+        sample = self.cwd / "sample.txt"
+        sample.write_text(
+            "token=abc123\npath=/Users/tester/project/file.txt\n",
+            encoding="utf-8",
+        )
+        policy = self.cwd / "policy.toml"
+        policy.write_text(
+            textwrap.dedent(
+                """
+                manifest_free_fallback_enabled = true
+
+                [redaction]
+                enabled = true
+                redact_paths = true
+                redact_secrets = true
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        inspect = self.run_cli("inspect", str(sample), "--json", "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 0, inspect.stderr)
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+
+        promote = self.run_cli("promote", str(report_path), "--policy", str(policy))
+        self.assertEqual(promote.returncode, 0, promote.stdout + promote.stderr)
+        target = self.cwd / Path(promote.stdout.strip().split("promoted_to: ", 1)[1])
+        promoted_file = next(target.rglob("sample.txt"))
+        self.assertEqual(
+            promoted_file.read_text(encoding="utf-8"),
+            "token=abc123\npath=/Users/tester/project/file.txt\n",
+        )
+
+    def test_promote_uses_redacted_derivative_when_required(self) -> None:
+        sample = self.cwd / "sample.txt"
+        sample.write_text(
+            "token=abc123\npath=/Users/tester/project/file.txt\n",
+            encoding="utf-8",
+        )
+        policy = self.cwd / "policy.toml"
+        policy.write_text(
+            textwrap.dedent(
+                """
+                manifest_free_fallback_enabled = true
+                redaction_required = true
+
+                [redaction]
+                enabled = true
+                redact_paths = true
+                redact_secrets = true
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        inspect = self.run_cli("inspect", str(sample), "--json", "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 0, inspect.stderr)
+        artifact = json.loads(inspect.stdout)
+        self.assertTrue(artifact["redaction"]["available"])
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+
+        promote = self.run_cli("promote", str(report_path), "--policy", str(policy))
+        self.assertEqual(promote.returncode, 0, promote.stdout + promote.stderr)
+        target = self.cwd / Path(promote.stdout.strip().split("promoted_to: ", 1)[1])
+        promoted_file = next(target.rglob("sample.txt"))
+        self.assertEqual(
+            promoted_file.read_text(encoding="utf-8"),
+            "token=<redacted>\npath=<redacted-path>\n",
+        )
+
+    def test_verify_follows_required_redacted_derivative(self) -> None:
+        sample = self.cwd / "sample.txt"
+        sample.write_text(
+            "token=abc123\npath=/Users/tester/project/file.txt\n",
+            encoding="utf-8",
+        )
+        policy = self.cwd / "policy.toml"
+        policy.write_text(
+            textwrap.dedent(
+                """
+                manifest_free_fallback_enabled = true
+                redaction_required = true
+
+                [redaction]
+                enabled = true
+                redact_paths = true
+                redact_secrets = true
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        inspect = self.run_cli("inspect", str(sample), "--json", "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 0, inspect.stderr)
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+
+        verify = self.run_cli("verify", str(report_path))
+        self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
+        self.assertIn("verified: promotable", verify.stdout)
+
+        shutil.rmtree(Path(artifact["redaction"]["path"]))
+        verify = self.run_cli("verify", str(report_path))
+        self.assertEqual(verify.returncode, 20)
+        self.assertIn("required redacted derivative is missing", verify.stdout)
+
     def test_discard_retention_can_copy_quarantine_input(self) -> None:
         bundle = self.cwd / "traversal.zip"
         with zipfile.ZipFile(bundle, "w") as archive:

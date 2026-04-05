@@ -16,6 +16,7 @@ class StateLayout:
     root: Path
     quarantine: Path
     shelter: Path
+    redacted: Path
     reports: Path
     history: Path
     discard: Path
@@ -36,6 +37,7 @@ def ensure_state(root: Path) -> StateLayout:
         root=root,
         quarantine=root / "quarantine",
         shelter=root / "shelter",
+        redacted=root / "redacted",
         reports=root / "reports",
         history=root / "history",
         discard=root / "discard",
@@ -45,6 +47,7 @@ def ensure_state(root: Path) -> StateLayout:
         layout.root,
         layout.quarantine,
         layout.shelter,
+        layout.redacted,
         layout.reports,
         layout.history,
         layout.discard,

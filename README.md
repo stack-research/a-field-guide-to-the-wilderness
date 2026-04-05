@@ -50,9 +50,13 @@ Inspection artifacts now also carry a top-level `suspicious_text` section with n
 
 Inspection artifacts also carry a top-level `manifest` section with manifest presence, discovered paths, schema validation status, normalized claims, and any manifest-free fallback decision used for promotion gating.
 
+Inspection artifacts now also carry a top-level `redaction` section with whether redaction was enabled, required, applied, and materialized as a parallel derivative.
+
 The inspection artifact is immutable after `inspect`. Live trust state is derived from the history ledger, not by rewriting the original report.
 
 Promotion is never implicit. `inspect` can leave a bundle in `shelter` or `discard`, but only `promote` can move material into `safe_camp`.
+
+When redaction is enabled and actually changes content, `inspect` now materializes a full derivative under `.wilderness/redacted/<inspection-id>/` while leaving the original shelter output untouched. `promote` uses that derivative only when policy requires redaction.
 
 By default, promotion requires a supported manifest. A local policy may allow a narrow manifest-free fallback for a single text or JSON file that otherwise passes structural checks. Directories and archives remain outside that fallback scope.
 
@@ -135,6 +139,7 @@ Discard-retention policy controls are:
 .wilderness/
   quarantine/
   shelter/
+  redacted/
   reports/
   history/
   discard/

@@ -14,6 +14,7 @@ from wilderness.common import (
     has_control_chars,
     is_likely_binary,
     read_bytes,
+    reset_directory,
     safe_display,
     sha256_bytes,
     sha256_directory,
@@ -243,6 +244,19 @@ def _manifest_payload_sha256(root: Path) -> str:
         digest.update(str(rel_path).encode("utf-8"))
         digest.update(sha256_file(path).encode("ascii"))
     return digest.hexdigest()
+
+
+def _materialize_redacted_tree(
+    normalized_root: Path,
+    redacted_root: Path,
+    redacted_files: dict[Path, bytes],
+) -> Path:
+    reset_directory(redacted_root)
+    for rel_path, data in sorted(redacted_files.items()):
+        target = redacted_root / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    return redacted_root
 
 
 def _manifest_mismatch(
@@ -625,6 +639,7 @@ def inspect_bundle(
     unpacked: UnpackResult,
     policy: Policy,
     history_path: Path | None = None,
+    redacted_root: Path | None = None,
     suspicious_text_rules: SuspiciousTextRuleSet | None = None,
 ) -> dict:
     if suspicious_text_rules is None:
@@ -635,6 +650,7 @@ def inspect_bundle(
     parsed_manifests: list[ParsedManifest] = []
     manifest_findings = []
     redaction_applied = False
+    redacted_files: dict[Path, bytes] = {}
 
     for path in sorted(candidate for candidate in unpacked.normalized_output_path.rglob("*") if candidate.is_file()):
         rel_path = path.relative_to(unpacked.normalized_output_path)
@@ -699,11 +715,13 @@ def inspect_bundle(
                 elif manifest is not None:
                     parsed_manifests.append(_parse_manifest_schema(rel_path, manifest))
 
-            if policy.redaction.enabled:
-                redacted, changed = redact_bytes(data, policy)
-                if changed:
-                    file_record["redacted_sha256"] = sha256_bytes(redacted)
-                    redaction_applied = True
+        if policy.redaction.enabled:
+            redacted, changed = redact_bytes(data, policy)
+            redacted_files[rel_path] = redacted
+            file_record["redacted"] = changed
+            if changed:
+                file_record["redacted_sha256"] = sha256_bytes(redacted)
+                redaction_applied = True
         file_records.append(file_record)
 
     manifest_present = bool(manifest_paths)
@@ -775,6 +793,16 @@ def inspect_bundle(
     if policy.redaction_required and not redaction_applied:
         promotion_reasons.append("redaction required by policy but no changes were applied")
 
+    redaction_path = None
+    redaction_digest = None
+    if policy.redaction.enabled and redaction_applied and redacted_root is not None:
+        redaction_path = _materialize_redacted_tree(
+            unpacked.normalized_output_path,
+            redacted_root,
+            redacted_files,
+        )
+        redaction_digest = sha256_directory(redaction_path)
+
     artifact = {
         "artifact_type": intake.artifact_type,
         "schema_version": "1",
@@ -800,6 +828,14 @@ def inspect_bundle(
             "retained": False,
             "path": None,
             "source": "raw_quarantine_copy",
+        },
+        "redaction": {
+            "enabled": policy.redaction.enabled,
+            "required": policy.redaction_required,
+            "applied": redaction_applied,
+            "available": redaction_path is not None,
+            "path": str(redaction_path.resolve()) if redaction_path is not None else None,
+            "normalized_sha256": redaction_digest,
         },
         "provenance": {
             **intake.provenance,

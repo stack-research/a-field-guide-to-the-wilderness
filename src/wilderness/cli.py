@@ -36,17 +36,41 @@ def _report_path(state_root: Path, inspection_id: str) -> Path:
     return state_root / "reports" / f"{inspection_id}.json"
 
 
+def _effective_source(artifact: dict) -> tuple[Path | None, str | None, str | None]:
+    redaction = artifact.get("redaction", {})
+    if redaction.get("required"):
+        path = redaction.get("path")
+        if not redaction.get("available") or not path:
+            return None, None, "required redacted derivative is missing"
+        return Path(path), redaction.get("normalized_sha256"), None
+
+    provenance = artifact["provenance"]
+    return (
+        Path(provenance["normalized_path"]),
+        provenance["normalized_sha256"],
+        None,
+    )
+
+
 def _current_blocking_reasons(artifact: dict) -> list[str]:
     reasons = list(artifact["promotion"]["blocking_reasons"])
     if reasons:
         return reasons
 
-    normalized_path = Path(artifact["provenance"]["normalized_path"])
-    if not normalized_path.exists():
+    source_path, expected_digest, source_error = _effective_source(artifact)
+    if source_error is not None:
+        return [source_error]
+    if source_path is None or expected_digest is None:
+        return ["effective promotion source is unavailable"]
+    if not source_path.exists():
+        if artifact.get("redaction", {}).get("required"):
+            return ["required redacted derivative is missing"]
         return ["normalized shelter output is missing"]
 
-    current_digest = sha256_directory(normalized_path)
-    if current_digest != artifact["provenance"]["normalized_sha256"]:
+    current_digest = sha256_directory(source_path)
+    if current_digest != expected_digest:
+        if artifact.get("redaction", {}).get("required"):
+            return ["inspection artifact is stale or redacted contents changed"]
         return ["inspection artifact is stale or shelter contents changed"]
     return []
 
@@ -119,6 +143,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         unpacked,
         policy,
         history_path=history_path,
+        redacted_root=state.redacted / intake.inspection_id,
         suspicious_text_rules=suspicious_text_rules,
     )
     discard_path = None
@@ -183,12 +208,15 @@ def cmd_promote(args: argparse.Namespace) -> int:
         print("promotion blocked: " + ", ".join(blockers))
         return EXIT_BLOCKED
 
-    normalized_path = Path(artifact["provenance"]["normalized_path"])
+    source_path, _, source_error = _effective_source(artifact)
+    if source_error is not None or source_path is None:
+        print("promotion blocked: " + (source_error or "effective promotion source is unavailable"))
+        return EXIT_BLOCKED
     target = Path(policy.state_root) / "safe-camp" / artifact["inspection_id"]
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         shutil.rmtree(target)
-    shutil.copytree(normalized_path, target)
+    shutil.copytree(source_path, target)
     append_history_event(
         history_path,
         build_history_event(
