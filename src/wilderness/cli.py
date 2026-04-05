@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
 
-from wilderness.inspect import inspect_bundle, manifest_check
+from wilderness.inspect import inspect_bundle, load_suspicious_text_rules, manifest_check
 from wilderness.intake import land_input
 from wilderness.policy import load_policy
 from wilderness.provenance import build_history_event, inspection_history_path
@@ -65,6 +66,11 @@ def _inspect_exit_code(artifact: dict) -> int:
 
 def cmd_inspect(args: argparse.Namespace) -> int:
     policy = load_policy(args.policy)
+    try:
+        suspicious_text_rules = load_suspicious_text_rules(policy)
+    except ValueError as error:
+        print(f"policy error: {error}", file=sys.stderr)
+        return EXIT_BLOCKED
     intake, state = land_input(args.input, policy)
     history_path = inspection_history_path(state.root, intake.inspection_id)
     append_history_event(
@@ -81,7 +87,13 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         ),
     )
     unpacked = build_shelter(intake, state, policy, args.out)
-    artifact = inspect_bundle(intake, unpacked, policy, history_path=history_path)
+    artifact = inspect_bundle(
+        intake,
+        unpacked,
+        policy,
+        history_path=history_path,
+        suspicious_text_rules=suspicious_text_rules,
+    )
     report_path = write_report(artifact, _report_path(state.root, intake.inspection_id))
     append_history_event(
         history_path,

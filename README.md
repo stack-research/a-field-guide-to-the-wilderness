@@ -53,6 +53,8 @@ Promotion is never implicit. `inspect` can leave a bundle in `shelter` or `disca
 
 Suspicious-text findings are advisory in v1. They appear in the inspection artifact and human report, but they do not block promotion by default.
 
+Suspicious-text scanning now supports adjacent-line windows and additive local TOML rule packs. Built-in rules remain on by default, and pack rules layer on top of them.
+
 Supported v1 manifest file names are fixed to:
 
 - `manifest.json`
@@ -67,6 +69,21 @@ Supported suspicious-text policy controls are:
 - `suspicious_text_max_bytes`
 - `suspicious_text_max_findings_per_file`
 - `suspicious_text_snippet_chars`
+- `suspicious_text_window_lines`
+- `suspicious_text_rule_packs`
+
+Rule packs are local TOML files referenced from policy. Relative pack paths resolve from the policy file directory.
+
+```toml
+schema_version = 1
+
+[[rules]]
+id = "audit_log_leak"
+pattern = "leak the audit log"
+description = "custom advisory phrase"
+exclude_pattern = "example|never"
+window_lines = 1
+```
 
 ## Exit Codes
 

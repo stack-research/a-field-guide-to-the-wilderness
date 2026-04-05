@@ -33,11 +33,16 @@ class Policy:
     suspicious_text_max_bytes: int = 262_144
     suspicious_text_max_findings_per_file: int = 5
     suspicious_text_snippet_chars: int = 96
+    suspicious_text_window_lines: int = 1
+    suspicious_text_rule_packs: list[str] = field(default_factory=list)
     redaction_required: bool = False
     redaction: RedactionPolicy = field(default_factory=RedactionPolicy)
+    source_path: str | None = field(default=None, repr=False)
 
     def snapshot(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        data.pop("source_path", None)
+        return data
 
 
 def _merge_redaction(policy: Policy, data: dict) -> None:
@@ -52,10 +57,12 @@ def load_policy(path: str | None) -> Policy:
     if not path:
         return policy
 
-    raw = tomllib.loads(Path(path).read_text(encoding="utf-8"))
+    policy_path = Path(path).expanduser().resolve()
+    raw = tomllib.loads(policy_path.read_text(encoding="utf-8"))
     for key, value in raw.items():
         if key == "redaction":
             continue
         setattr(policy, key, value)
     _merge_redaction(policy, raw)
+    policy.source_path = str(policy_path)
     return policy

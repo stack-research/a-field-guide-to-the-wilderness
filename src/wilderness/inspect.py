@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
@@ -26,43 +27,56 @@ SUPPORTED_MANIFEST_NAMES = {
     "manifest.toml",
     "provenance.json",
 }
-SUSPICIOUS_TEXT_RULES = (
-    (
-        "ignore_prior_instructions",
-        re.compile(
-            r"\b(ignore previous instructions|ignore prior instructions|disregard earlier instructions)\b",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "system_prompt_reference",
-        re.compile(
-            r"(\b(reveal|show|print|dump|expose)\b.{0,40}\b(system prompt|developer message|hidden instructions|prompt)\b|\b(system prompt|developer message|hidden instructions)\b.{0,40}\b(reveal|show|print|dump|expose)\b)",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "tool_execution_request",
-        re.compile(
-            r"(\brun this command\b|\bexecute (this|the|following)? ?command\b|\b(run|execute|use)\b.{0,32}\b(curl|wget|powershell)\b|\b(curl|wget|powershell)\b.{0,32}\b(run|execute|use)\b)",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "credential_request",
-        re.compile(
-            r"\b(print|reveal|show|dump|share|send|expose)\b.{0,48}\b(token|api key|password|secret|credential)\b",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "data_exfiltration_request",
-        re.compile(
-            r"\b(upload|send|print|dump|expose|share)\b.{0,64}\b(local files?|environment variables?|env vars?|secrets?)\b",
-            re.IGNORECASE,
-        ),
-    ),
+_SUSPICIOUS_TEXT_FLAGS = re.IGNORECASE | re.MULTILINE | re.DOTALL
+_BUILTIN_EXCLUDE_PATTERN = (
+    r"\b(do not|does not|don't|never|avoid|avoids|without|example|examples|documentation|docs|describes?|explains?)\b"
 )
+_BUILTIN_RULE_DEFS = (
+    {
+        "id": "ignore_prior_instructions",
+        "pattern": r"\b(ignore|disregard|forget)\b[\s\S]{0,48}\b(previous|prior|earlier|above)\b[\s\S]{0,24}\b(instructions?|guidance|directions?|messages?)\b",
+        "description": "instruction override language",
+    },
+    {
+        "id": "role_confusion_request",
+        "pattern": r"(\b(ignore|override|replace|act as|you are now)\b[\s\S]{0,48}\b(system|developer|hidden)\b[\s\S]{0,24}\b(messages?|instructions?|prompts?)\b|\b(system|developer|hidden)\b[\s\S]{0,32}\b(messages?|instructions?|prompts?)\b[\s\S]{0,48}\b(ignore|override|replace|act as|you are now)\b)",
+        "description": "role or instruction hierarchy confusion",
+        "exclude_pattern": _BUILTIN_EXCLUDE_PATTERN,
+    },
+    {
+        "id": "system_prompt_reference",
+        "pattern": r"(\b(reveal|show|print|dump|expose)\b[\s\S]{0,40}\b(system prompt|developer message|hidden instructions|prompt)\b|\b(system prompt|developer message|hidden instructions)\b[\s\S]{0,40}\b(reveal|show|print|dump|expose)\b)",
+        "description": "attempt to expose hidden prompt material",
+        "exclude_pattern": _BUILTIN_EXCLUDE_PATTERN,
+    },
+    {
+        "id": "tool_execution_request",
+        "pattern": r"(\brun this command\b|\bexecute (this|the|following)? ?command\b|\b(download|fetch|run|execute|use)\b[\s\S]{0,48}\b(curl|wget|powershell|bash|sh|script)\b|\b(curl|wget|powershell|bash|sh|script)\b[\s\S]{0,48}\b(download|fetch|run|execute|use)\b)",
+        "description": "tooling or command execution request",
+        "exclude_pattern": _BUILTIN_EXCLUDE_PATTERN,
+    },
+    {
+        "id": "credential_request",
+        "pattern": r"\b(print|reveal|show|dump|share|send|expose)\b[\s\S]{0,48}\b(token|api key|password|secret|credential)\b",
+        "description": "credential disclosure request",
+        "exclude_pattern": _BUILTIN_EXCLUDE_PATTERN,
+    },
+    {
+        "id": "data_exfiltration_request",
+        "pattern": r"\b(upload|send|print|dump|expose|share)\b[\s\S]{0,64}\b(local files?|workspace|environment variables?|env vars?|secrets?)\b",
+        "description": "local data exfiltration request",
+        "exclude_pattern": _BUILTIN_EXCLUDE_PATTERN,
+    },
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SuspiciousTextRule:
+    rule_id: str
+    pattern: re.Pattern[str]
+    description: str | None = None
+    exclude_pattern: re.Pattern[str] | None = None
+    window_lines: int | None = None
 
 
 def _finding(
@@ -114,41 +128,151 @@ def _manifest_mismatch(manifest: dict, raw_sha256: str, source_name: str, path: 
     return findings
 
 
-def _scan_suspicious_text(decoded: str, rel_path: Path, policy: Policy) -> list[dict]:
-    if not policy.suspicious_text_enabled:
-        return []
+def _compile_suspicious_pattern(pattern: str, context: str) -> re.Pattern[str]:
+    try:
+        return re.compile(pattern, _SUSPICIOUS_TEXT_FLAGS)
+    except re.error as error:
+        raise ValueError(f"{context}: invalid regex: {error}") from error
 
+
+def _compile_suspicious_rule(raw_rule: dict, context: str) -> SuspiciousTextRule:
+    rule_id = raw_rule.get("id")
+    pattern = raw_rule.get("pattern")
+    if not isinstance(rule_id, str) or not rule_id:
+        raise ValueError(f"{context}: rule id must be a non-empty string")
+    if not isinstance(pattern, str) or not pattern:
+        raise ValueError(f"{context}: rule pattern must be a non-empty string")
+    description = raw_rule.get("description")
+    if description is not None and not isinstance(description, str):
+        raise ValueError(f"{context}: description must be a string")
+    exclude_pattern_text = raw_rule.get("exclude_pattern")
+    if exclude_pattern_text is not None and not isinstance(exclude_pattern_text, str):
+        raise ValueError(f"{context}: exclude_pattern must be a string")
+    window_lines = raw_rule.get("window_lines")
+    if window_lines is not None and (not isinstance(window_lines, int) or window_lines < 0):
+        raise ValueError(f"{context}: window_lines must be a non-negative integer")
+    return SuspiciousTextRule(
+        rule_id=rule_id,
+        pattern=_compile_suspicious_pattern(pattern, context),
+        description=description,
+        exclude_pattern=(
+            _compile_suspicious_pattern(exclude_pattern_text, context)
+            if exclude_pattern_text is not None
+            else None
+        ),
+        window_lines=window_lines,
+    )
+
+
+def _resolve_rule_pack_path(pack_path: str, policy: Policy) -> Path:
+    candidate = Path(pack_path).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    if policy.source_path:
+        return Path(policy.source_path).parent / candidate
+    return Path.cwd() / candidate
+
+
+def _load_rule_pack(pack_path: Path) -> list[SuspiciousTextRule]:
+    try:
+        raw = tomllib.loads(pack_path.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise ValueError(f"unable to read suspicious-text rule pack {pack_path}: {error.strerror}") from error
+    except tomllib.TOMLDecodeError as error:
+        raise ValueError(f"invalid suspicious-text rule pack {pack_path}: {error}") from error
+
+    if raw.get("schema_version") != 1:
+        raise ValueError(f"invalid suspicious-text rule pack {pack_path}: schema_version must be 1")
+    rules = raw.get("rules")
+    if not isinstance(rules, list) or not rules:
+        raise ValueError(f"invalid suspicious-text rule pack {pack_path}: rules must be a non-empty list")
+    compiled = []
+    for index, raw_rule in enumerate(rules, start=1):
+        if not isinstance(raw_rule, dict):
+            raise ValueError(f"invalid suspicious-text rule pack {pack_path}: rule {index} must be a table")
+        compiled.append(_compile_suspicious_rule(raw_rule, f"{pack_path} rule {index}"))
+    return compiled
+
+
+def load_suspicious_text_rules(policy: Policy) -> list[SuspiciousTextRule]:
+    rules = []
+    if policy.suspicious_text_enabled:
+        rules.extend(
+            _compile_suspicious_rule(raw_rule, f"builtin rule {raw_rule['id']}")
+            for raw_rule in _BUILTIN_RULE_DEFS
+        )
+    for pack in policy.suspicious_text_rule_packs:
+        if not isinstance(pack, str) or not pack:
+            raise ValueError("suspicious_text_rule_packs entries must be non-empty strings")
+        rules.extend(_load_rule_pack(_resolve_rule_pack_path(pack, policy)))
+    return rules
+
+
+def _suspicious_text_snippet(text: str, match: re.Match[str], snippet_chars: int) -> str:
+    start = max(0, match.start() - (snippet_chars // 2))
+    end = min(len(text), start + snippet_chars)
+    return safe_display(text[start:end])
+
+
+def _scan_suspicious_text(
+    decoded: str,
+    rel_path: Path,
+    policy: Policy,
+    rules: list[SuspiciousTextRule],
+) -> list[dict]:
+    if not policy.suspicious_text_enabled or not rules:
+        return []
     snippet_chars = max(16, policy.suspicious_text_snippet_chars)
     findings: list[dict] = []
-    seen: set[tuple[str, int, str]] = set()
-    truncated = decoded[: policy.suspicious_text_max_bytes]
+    seen: set[tuple[str, int, int, str]] = set()
+    lines = decoded[: policy.suspicious_text_max_bytes].splitlines()
 
-    for line_number, line in enumerate(truncated.splitlines(), start=1):
+    for start_index in range(len(lines)):
         if len(findings) >= policy.suspicious_text_max_findings_per_file:
             break
-        for rule_id, pattern in SUSPICIOUS_TEXT_RULES:
-            match = pattern.search(line)
-            if match is None:
-                continue
-            start = max(0, match.start() - (snippet_chars // 2))
-            end = min(len(line), start + snippet_chars)
-            snippet = safe_display(line[start:end])
-            key = (rule_id, line_number, snippet)
-            if key in seen:
-                continue
-            seen.add(key)
-            findings.append(
-                _finding(
-                    "suspicious_text",
-                    "moderate",
-                    f"suspicious text matched rule {rule_id}",
-                    str(rel_path),
-                    rule_id=rule_id,
-                    line=line_number,
-                    snippet=snippet,
-                )
+        for rule in rules:
+            max_window_lines = (
+                rule.window_lines if rule.window_lines is not None else policy.suspicious_text_window_lines
             )
-            if len(findings) >= policy.suspicious_text_max_findings_per_file:
+            max_window_lines = max(0, max_window_lines)
+            matched_rule = False
+            for span in range(1, max_window_lines + 2):
+                end_index = start_index + span
+                if end_index > len(lines):
+                    break
+                text = "\n".join(lines[start_index:end_index])
+                match = rule.pattern.search(text)
+                if match is None:
+                    continue
+                if rule.exclude_pattern is not None and rule.exclude_pattern.search(text):
+                    continue
+                start_line = start_index + 1
+                end_line = end_index
+                snippet = _suspicious_text_snippet(text, match, snippet_chars)
+                key = (rule.rule_id, start_line, end_line, snippet)
+                if key in seen:
+                    matched_rule = True
+                    break
+                seen.add(key)
+                extra: dict[str, str | int] = {
+                    "rule_id": rule.rule_id,
+                    "line": start_line,
+                    "snippet": snippet,
+                }
+                if end_line > start_line:
+                    extra["end_line"] = end_line
+                findings.append(
+                    _finding(
+                        "suspicious_text",
+                        "moderate",
+                        f"suspicious text matched rule {rule.rule_id}",
+                        str(rel_path),
+                        **extra,
+                    )
+                )
+                matched_rule = True
+                break
+            if matched_rule and len(findings) >= policy.suspicious_text_max_findings_per_file:
                 break
     return findings
 
@@ -158,7 +282,10 @@ def inspect_bundle(
     unpacked: UnpackResult,
     policy: Policy,
     history_path: Path | None = None,
+    suspicious_text_rules: list[SuspiciousTextRule] | None = None,
 ) -> dict:
+    if suspicious_text_rules is None:
+        suspicious_text_rules = load_suspicious_text_rules(policy)
     findings = list(unpacked.findings)
     file_records = []
     manifest_paths = []
@@ -216,7 +343,7 @@ def inspect_bundle(
                     )
 
             if rel_path.suffix.lower() in TEXT_EXTENSIONS | {""}:
-                findings.extend(_scan_suspicious_text(decoded, rel_path, policy))
+                findings.extend(_scan_suspicious_text(decoded, rel_path, policy, suspicious_text_rules))
 
             if _is_supported_manifest(rel_path):
                 manifest_paths.append(str(rel_path))

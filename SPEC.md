@@ -227,6 +227,8 @@ Recommended finding families:
 
 For v1, `suspicious_text` should remain heuristic and advisory by default. It should help an operator notice prompt-poison and exfiltration-shaped text without silently upgrading or blocking trust on its own.
 
+The heuristic layer may grow through local signature packs, but it should stay deterministic, inspectable, and advisory unless policy semantics are deliberately widened later.
+
 ## Trust States
 
 The trust model should be operational, not philosophical.
@@ -335,6 +337,8 @@ Expected policy controls:
 - blocked file types
 - filename normalization rules
 - control-character policy
+- suspicious-text window size
+- suspicious-text local rule packs
 - redaction requirements
 - promotion thresholds
 

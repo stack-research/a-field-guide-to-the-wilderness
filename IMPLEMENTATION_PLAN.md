@@ -61,3 +61,11 @@ This checklist feeds the first implementation sprints for `wilderness`.
 - [x] Keep inspection artifacts immutable after `inspect`
 - [x] Derive current safe-camp state from history instead of rewriting the report
 - [x] Add `verify` as the downstream CLI gate for promotable and promoted artifacts
+
+## Suspicious-Text Heuristics And Rule Packs
+
+- [x] Add adjacent-line window matching for suspicious-text heuristics
+- [x] Keep suspicious-text findings advisory and non-blocking by default
+- [x] Support additive local TOML suspicious-text rule packs
+- [x] Allow exclude patterns and per-rule window overrides in rule packs
+- [x] Surface invalid rule packs as startup policy errors
