@@ -108,3 +108,11 @@ This checklist feeds the first implementation sprints for `wilderness`.
 - [x] Record redaction availability and derivative hashes in the inspection artifact
 - [x] Keep shelter output unchanged and route promotion to the redacted derivative only when required
 - [x] Make `verify` follow the effective downstream source for required redaction cases
+
+## Opt-In Suspicious-Text Promotion Gate
+
+- [x] Add suspicious-text block-all and per-rule policy controls
+- [x] Keep suspicious-text findings advisory by default
+- [x] Let local policy turn selected suspicious-text findings into promotion blockers
+- [x] Record suspicious-text gating metadata in the inspection artifact
+- [x] Surface blocking suspicious-text counts in the human report

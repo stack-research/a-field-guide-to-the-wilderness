@@ -46,7 +46,7 @@ Each inspection writes:
 
 When policy enables forensic retention for blocked artifacts, `inspect` also copies the raw quarantined input into `.wilderness/discard/<inspection-id>/raw/` and records that path in the inspection artifact.
 
-Inspection artifacts now also carry a top-level `suspicious_text` section with normalization metadata, built-in rule counts, and loaded pack provenance.
+Inspection artifacts now also carry a top-level `suspicious_text` section with normalization metadata, built-in rule counts, loaded pack provenance, and any local suspicious-text promotion-gating policy.
 
 Inspection artifacts also carry a top-level `manifest` section with manifest presence, discovered paths, schema validation status, normalized claims, and any manifest-free fallback decision used for promotion gating.
 
@@ -77,7 +77,7 @@ For embedded manifests, `raw_sha256` is checked against the bundle payload the m
 
 `wilderness verify` is the downstream gate. It exits `0` only when a report is still promotable or already promoted. `--require-promoted` insists on a live `safe_camp` copy.
 
-Suspicious-text findings are advisory in v1. They appear in the inspection artifact and human report, but they do not block promotion by default.
+Suspicious-text findings are advisory by default. A local policy may also turn all suspicious-text findings, or selected suspicious-text `rule_id` values, into promotion blockers without changing the detector itself.
 
 Suspicious-text scanning now supports adjacent-line windows, normalization for evasive text forms, and additive local TOML rule packs. Built-in rules remain on by default, and pack rules layer on top of them.
 
@@ -97,6 +97,8 @@ Supported suspicious-text policy controls are:
 - `suspicious_text_snippet_chars`
 - `suspicious_text_window_lines`
 - `suspicious_text_rule_packs`
+- `suspicious_text_block_all`
+- `suspicious_text_block_rule_ids`
 
 Manifest promotion policy controls are:
 

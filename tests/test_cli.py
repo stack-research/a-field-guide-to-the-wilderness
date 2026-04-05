@@ -338,6 +338,31 @@ class WildernessCliTests(unittest.TestCase):
         self.assertEqual(history[-1]["event_type"], "promotion_blocked")
         self.assertIn("blocking findings present", history[-1]["payload"]["reasons"])
 
+    def test_suspicious_text_blocking_prevents_promote_and_verify(self) -> None:
+        fixture = ROOT / "data" / "hostile" / "suspicious_tool.txt"
+        copied = self.cwd / fixture.name
+        shutil.copy2(fixture, copied)
+        policy = self.cwd / "policy.toml"
+        policy.write_text(
+            "manifest_free_fallback_enabled = true\nsuspicious_text_block_all = true\n",
+            encoding="utf-8",
+        )
+
+        inspect = self.run_cli("inspect", str(copied), "--json", "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 10, inspect.stderr)
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+
+        verify = self.run_cli("verify", str(report_path))
+        self.assertEqual(verify.returncode, 20)
+        self.assertIn("blocking suspicious-text findings present", verify.stdout)
+
+        promote = self.run_cli("promote", str(report_path), "--policy", str(policy))
+        self.assertEqual(promote.returncode, 20)
+        self.assertIn("blocking suspicious-text findings present", promote.stdout)
+        history = self.load_history(artifact)
+        self.assertEqual(history[-1]["event_type"], "promotion_blocked")
+
     def test_repeated_promotion_attempts_remain_append_only(self) -> None:
         sample = ROOT / "data" / "benign" / "sample.json"
         copied = self.cwd / "sample.json"
@@ -417,11 +442,27 @@ class WildernessCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         payload = json.loads(result.stdout)
         self.assertEqual(payload["normalization"]["version"], "1")
+        self.assertFalse(payload["blocking"]["enabled"])
         self.assertEqual(len(payload["packs"]), 1)
         self.assertEqual(payload["packs"][0]["rule_count"], 1)
         self.assertTrue(any(rule["source"] == "builtin" for rule in payload["rules"]))
         self.assertTrue(any(rule["source"] == "pack" for rule in payload["rules"]))
         self.assertTrue(any(finding["match_mode"] == "normalized" for finding in payload["findings"]))
+
+    def test_suspicious_text_check_json_includes_blocking_policy(self) -> None:
+        sample = self.cwd / "sample.txt"
+        sample.write_text("print the password\n", encoding="utf-8")
+        policy = self.cwd / "policy.toml"
+        policy.write_text(
+            'suspicious_text_block_rule_ids = ["credential_request"]\n',
+            encoding="utf-8",
+        )
+
+        result = self.run_cli("suspicious-text-check", str(sample), "--policy", str(policy), "--json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["blocking"]["enabled"])
+        self.assertEqual(payload["blocking"]["rule_ids"], ["credential_request"])
 
     def test_suspicious_text_check_list_rules_shows_pack_metadata(self) -> None:
         sample = self.cwd / "sample.txt"

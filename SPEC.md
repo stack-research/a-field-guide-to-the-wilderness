@@ -233,7 +233,7 @@ Recommended finding families:
 
 For v1, `suspicious_text` should remain heuristic and advisory by default. It should help an operator notice prompt-poison and exfiltration-shaped text without silently upgrading or blocking trust on its own.
 
-The heuristic layer may grow through local signature packs, but it should stay deterministic, inspectable, and advisory unless policy semantics are deliberately widened later.
+The heuristic layer may grow through local signature packs, and local policy may optionally make all suspicious-text findings or selected suspicious-text rule ids block promotion. The detector should still stay deterministic and inspectable.
 
 Normalization may be used to catch evasive text forms, but emitted findings should still point back to raw line ranges and raw-text snippets.
 
@@ -387,6 +387,8 @@ Expected policy controls:
 - promotion thresholds
 
 Policy should be local and inspectable. No cloud dependency.
+
+Suspicious-text policy should support both an opt-in block-all mode and a list of blocking `rule_id` values. Blocking suspicious-text findings should affect promotion eligibility and downstream verification, but should not reclassify artifacts as `discard` on their own.
 
 `manifest-check` should stay narrow. It validates supported manifests against the explicit schema contract, but it should not simulate manifest-free promotion fallback.
 

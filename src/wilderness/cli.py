@@ -104,6 +104,15 @@ def _load_rule_set_or_error(policy: object):
 
 
 def _validate_policy(policy) -> str | None:
+    if not isinstance(policy.suspicious_text_block_rule_ids, list):
+        return "suspicious_text_block_rule_ids must be a list"
+    seen_rule_ids: set[str] = set()
+    for rule_id in policy.suspicious_text_block_rule_ids:
+        if not isinstance(rule_id, str) or not rule_id:
+            return "suspicious_text_block_rule_ids entries must be non-empty strings"
+        if rule_id in seen_rule_ids:
+            return "suspicious_text_block_rule_ids entries must be unique"
+        seen_rule_ids.add(rule_id)
     if policy.manifest_free_fallback_scope != "single_file_text_or_json":
         return "manifest_free_fallback_scope must be 'single_file_text_or_json'"
     if policy.manifest_free_fallback_enabled and not policy.manifest_required_for_promotion:

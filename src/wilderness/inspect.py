@@ -439,6 +439,16 @@ def suspicious_text_summary(rule_set: SuspiciousTextRuleSet) -> dict:
     }
 
 
+def _suspicious_text_blocks_promotion(finding: dict, policy: Policy) -> bool:
+    if finding.get("family") != "suspicious_text":
+        return False
+    if not policy.suspicious_text_enabled:
+        return False
+    if policy.suspicious_text_block_all:
+        return True
+    return finding.get("rule_id") in set(policy.suspicious_text_block_rule_ids)
+
+
 def suspicious_text_rule_listing(rule_set: SuspiciousTextRuleSet, policy: Policy) -> list[dict]:
     rules = []
     for rule in rule_set.rules:
@@ -627,6 +637,14 @@ def suspicious_text_check(
             "enabled": rule_set.enabled,
             "version": rule_set.normalization_version,
         },
+        "blocking": {
+            "enabled": bool(
+                policy.suspicious_text_enabled
+                and (policy.suspicious_text_block_all or policy.suspicious_text_block_rule_ids)
+            ),
+            "block_all": policy.suspicious_text_block_all,
+            "rule_ids": list(policy.suspicious_text_block_rule_ids),
+        },
         "packs": suspicious_text_summary(rule_set)["loaded_packs"],
         "rules": suspicious_text_rule_listing(rule_set, policy),
         "findings": list(scan.findings),
@@ -793,6 +811,12 @@ def inspect_bundle(
     if policy.redaction_required and not redaction_applied:
         promotion_reasons.append("redaction required by policy but no changes were applied")
 
+    blocking_suspicious_text_findings = [
+        finding for finding in findings if _suspicious_text_blocks_promotion(finding, policy)
+    ]
+    if blocking_suspicious_text_findings:
+        promotion_reasons.append("blocking suspicious-text findings present")
+
     redaction_path = None
     redaction_digest = None
     if policy.redaction.enabled and redaction_applied and redacted_root is not None:
@@ -813,7 +837,15 @@ def inspect_bundle(
         "history_path": str(history_path.resolve()) if history_path is not None else None,
         "inspection_id": intake.inspection_id,
         "received_at": intake.provenance["received_at"],
-        "suspicious_text": suspicious_text_summary(suspicious_text_rules),
+        "suspicious_text": {
+            **suspicious_text_summary(suspicious_text_rules),
+            "blocking_enabled": bool(
+                policy.suspicious_text_enabled
+                and (policy.suspicious_text_block_all or policy.suspicious_text_block_rule_ids)
+            ),
+            "blocking_rule_ids": list(policy.suspicious_text_block_rule_ids),
+            "blocking_findings": len(blocking_suspicious_text_findings),
+        },
         "manifest": {
             "present": manifest_present,
             "paths": manifest_paths,

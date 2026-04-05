@@ -98,6 +98,10 @@ def render_report(report: dict) -> str:
             lines.append(f"redaction_available: {redaction.get('available', False)}")
             if redaction.get("path") is not None:
                 lines.append(f"redaction_path: {safe_display(redaction['path'])}")
+    if report.get("suspicious_text", {}).get("blocking_findings", 0) > 0:
+        lines.append(
+            f"suspicious_text_blocking_findings: {report['suspicious_text']['blocking_findings']}"
+        )
     if report.get("discard", {}).get("retained"):
         lines.append(f"discard_retained: {report['discard']['retained']}")
         lines.append(f"discard_path: {safe_display(report['discard']['path'])}")
