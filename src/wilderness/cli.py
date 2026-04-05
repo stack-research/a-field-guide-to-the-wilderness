@@ -80,6 +80,10 @@ def _load_rule_set_or_error(policy: object):
 
 
 def _validate_policy(policy) -> str | None:
+    if policy.manifest_free_fallback_scope != "single_file_text_or_json":
+        return "manifest_free_fallback_scope must be 'single_file_text_or_json'"
+    if policy.manifest_free_fallback_enabled and not policy.manifest_required_for_promotion:
+        return "manifest_free_fallback_enabled requires manifest_required_for_promotion to stay true"
     if policy.discard_copy_mode != "copy":
         return "discard_copy_mode must be 'copy'"
     return None

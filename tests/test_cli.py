@@ -32,6 +32,11 @@ class WildernessCliTests(unittest.TestCase):
             capture_output=True,
         )
 
+    def write_manifest_fallback_policy(self) -> Path:
+        policy = self.cwd / "policy.toml"
+        policy.write_text("manifest_free_fallback_enabled = true\n", encoding="utf-8")
+        return policy
+
     def load_history(self, artifact: dict) -> list[dict]:
         history_path = Path(artifact["history_path"])
         return [
@@ -44,8 +49,18 @@ class WildernessCliTests(unittest.TestCase):
         sample = ROOT / "data" / "benign" / "sample.json"
         copied = self.cwd / "sample.json"
         shutil.copy2(sample, copied)
+        policy = self.cwd / "policy.toml"
+        policy.write_text(
+            textwrap.dedent(
+                """
+                manifest_free_fallback_enabled = true
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
 
-        inspect = self.run_cli("inspect", str(copied))
+        inspect = self.run_cli("inspect", str(copied), "--policy", str(policy))
         self.assertEqual(inspect.returncode, 0, inspect.stderr)
         report_path = Path(
             inspect.stdout.strip().split("report_path: ", 1)[1]
@@ -53,8 +68,9 @@ class WildernessCliTests(unittest.TestCase):
         artifact = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertEqual(artifact["status"], "shelter")
         self.assertTrue(artifact["promotion"]["eligible"])
+        self.assertTrue(artifact["manifest"]["fallback_applied"])
 
-        promote = self.run_cli("promote", str(report_path))
+        promote = self.run_cli("promote", str(report_path), "--policy", str(policy))
         self.assertEqual(promote.returncode, 0, promote.stdout + promote.stderr)
         promoted = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertEqual(promoted["status"], "shelter")
@@ -65,8 +81,9 @@ class WildernessCliTests(unittest.TestCase):
         sample = ROOT / "data" / "benign" / "sample.json"
         copied = self.cwd / "sample.json"
         shutil.copy2(sample, copied)
+        policy = self.write_manifest_fallback_policy()
 
-        inspect = self.run_cli("inspect", str(copied), "--json")
+        inspect = self.run_cli("inspect", str(copied), "--json", "--policy", str(policy))
         self.assertEqual(inspect.returncode, 0, inspect.stderr)
         artifact = json.loads(inspect.stdout)
         report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
@@ -111,10 +128,11 @@ class WildernessCliTests(unittest.TestCase):
         sample = ROOT / "data" / "benign" / "sample.json"
         copied = self.cwd / "sample.json"
         shutil.copy2(sample, copied)
+        policy = self.write_manifest_fallback_policy()
 
-        inspect = self.run_cli("inspect", str(copied))
+        inspect = self.run_cli("inspect", str(copied), "--policy", str(policy))
         report_path = Path(inspect.stdout.strip().split("report_path: ", 1)[1])
-        promote = self.run_cli("promote", str(report_path))
+        promote = self.run_cli("promote", str(report_path), "--policy", str(policy))
         self.assertEqual(promote.returncode, 0, promote.stdout + promote.stderr)
 
         report = self.run_cli("report", str(report_path))
@@ -125,8 +143,10 @@ class WildernessCliTests(unittest.TestCase):
         sample = ROOT / "data" / "benign" / "sample.json"
         copied = self.cwd / "sample.json"
         shutil.copy2(sample, copied)
+        policy = self.cwd / "policy.toml"
+        policy.write_text("manifest_free_fallback_enabled = true\n", encoding="utf-8")
 
-        inspect = self.run_cli("inspect", str(copied))
+        inspect = self.run_cli("inspect", str(copied), "--policy", str(policy))
         report_path = Path(inspect.stdout.strip().split("report_path: ", 1)[1])
 
         verify = self.run_cli("verify", str(report_path))
@@ -136,7 +156,7 @@ class WildernessCliTests(unittest.TestCase):
         require_promoted = self.run_cli("verify", str(report_path), "--require-promoted")
         self.assertEqual(require_promoted.returncode, 20)
 
-        promote = self.run_cli("promote", str(report_path))
+        promote = self.run_cli("promote", str(report_path), "--policy", str(policy))
         self.assertEqual(promote.returncode, 0, promote.stdout + promote.stderr)
 
         require_promoted = self.run_cli("verify", str(report_path), "--require-promoted")
@@ -211,13 +231,15 @@ class WildernessCliTests(unittest.TestCase):
         sample = ROOT / "data" / "benign" / "sample.json"
         copied = self.cwd / "sample.json"
         shutil.copy2(sample, copied)
+        policy = self.cwd / "policy.toml"
+        policy.write_text("manifest_free_fallback_enabled = true\n", encoding="utf-8")
 
-        inspect = self.run_cli("inspect", str(copied), "--json")
+        inspect = self.run_cli("inspect", str(copied), "--json", "--policy", str(policy))
         artifact = json.loads(inspect.stdout)
         report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
 
-        first = self.run_cli("promote", str(report_path))
-        second = self.run_cli("promote", str(report_path))
+        first = self.run_cli("promote", str(report_path), "--policy", str(policy))
+        second = self.run_cli("promote", str(report_path), "--policy", str(policy))
         self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
         self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
 
@@ -226,6 +248,31 @@ class WildernessCliTests(unittest.TestCase):
             [event["event_type"] for event in history],
             ["received", "inspected", "promoted", "promoted"],
         )
+
+    def test_missing_manifest_blocks_promotion_by_default(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+
+        inspect = self.run_cli("inspect", str(copied), "--json")
+        self.assertEqual(inspect.returncode, 10, inspect.stderr)
+        artifact = json.loads(inspect.stdout)
+        self.assertFalse(artifact["promotion"]["eligible"])
+        self.assertEqual(artifact["promotion"]["blocking_reasons"], ["manifest required for promotion"])
+        self.assertFalse(artifact["manifest"]["fallback_applied"])
+
+    def test_manifest_free_fallback_can_reenable_single_file_promotion(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+        policy = self.cwd / "policy.toml"
+        policy.write_text("manifest_free_fallback_enabled = true\n", encoding="utf-8")
+
+        inspect = self.run_cli("inspect", str(copied), "--json", "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 0, inspect.stderr)
+        artifact = json.loads(inspect.stdout)
+        self.assertTrue(artifact["promotion"]["eligible"])
+        self.assertTrue(artifact["manifest"]["fallback_applied"])
 
     def test_suspicious_text_check_json_reports_pack_provenance_and_matches(self) -> None:
         sample = self.cwd / "sample.txt"

@@ -35,6 +35,9 @@ class Policy:
     suspicious_text_snippet_chars: int = 96
     suspicious_text_window_lines: int = 1
     suspicious_text_rule_packs: list[str] = field(default_factory=list)
+    manifest_required_for_promotion: bool = True
+    manifest_free_fallback_enabled: bool = False
+    manifest_free_fallback_scope: str = "single_file_text_or_json"
     discard_retention_enabled: bool = False
     discard_copy_mode: str = "copy"
     redaction_required: bool = False

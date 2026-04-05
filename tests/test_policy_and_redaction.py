@@ -33,8 +33,10 @@ class WildernessPolicyTests(unittest.TestCase):
     def test_control_characters_are_reported_safely(self) -> None:
         hostile_name = self.cwd / "ansi.txt"
         hostile_name.write_text("hello\x1b[31mworld", encoding="utf-8")
+        policy = self.cwd / "policy.toml"
+        policy.write_text("manifest_free_fallback_enabled = true\n", encoding="utf-8")
 
-        inspect = self.run_cli("inspect", str(hostile_name))
+        inspect = self.run_cli("inspect", str(hostile_name), "--policy", str(policy))
         self.assertEqual(inspect.returncode, 0)
         self.assertIn("\\x1b", inspect.stdout)
 
@@ -93,7 +95,10 @@ class WildernessPolicyTests(unittest.TestCase):
         sample = self.cwd / "sample.json"
         sample.write_text('{"ok": true}\n', encoding="utf-8")
         policy = self.cwd / "policy.toml"
-        policy.write_text("discard_retention_enabled = true\n", encoding="utf-8")
+        policy.write_text(
+            "discard_retention_enabled = true\nmanifest_free_fallback_enabled = true\n",
+            encoding="utf-8",
+        )
 
         inspect = self.run_cli("inspect", str(sample), "--json", "--policy", str(policy))
         self.assertEqual(inspect.returncode, 0, inspect.stderr)

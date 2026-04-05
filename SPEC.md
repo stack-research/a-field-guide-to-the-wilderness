@@ -193,7 +193,9 @@ Recommended top-level inspection artifact fields:
 - `received_at`
 - `history_path`
 - `discard`
+- `manifest`
 - `provenance`
+- `suspicious_text`
 - `files`
 - `findings`
 - `policy`
@@ -275,6 +277,17 @@ Promotion from quarantine to safe camp should require:
 - recorded provenance trail
 - optional redaction completed if policy requires it
 
+For v1, the default stance should be strict: missing supported manifests produce a `provenance_gap` finding and block promotion unless local policy explicitly enables a manifest-free fallback.
+
+The first fallback scope should stay narrow:
+
+- single text files
+- single JSON artifacts
+- exactly one normalized output file
+- no severe or critical blocking findings
+- no directory or archive inputs
+- no nested archive behavior
+
 Promotion should never happen implicitly because a parser "handled" the content.
 
 ## Redaction and Privacy
@@ -350,11 +363,15 @@ Expected policy controls:
 - suspicious-text window size
 - suspicious-text local rule packs
 - suspicious-text normalization behavior
+- manifest required for promotion
+- manifest-free fallback enablement and scope
 - discard retention
 - redaction requirements
 - promotion thresholds
 
 Policy should be local and inspectable. No cloud dependency.
+
+`manifest-check` should stay narrow. It validates supported manifests and their parseability, but it should not simulate manifest-free promotion fallback.
 
 ## Architecture
 

@@ -48,9 +48,13 @@ When policy enables forensic retention for blocked artifacts, `inspect` also cop
 
 Inspection artifacts now also carry a top-level `suspicious_text` section with normalization metadata, built-in rule counts, and loaded pack provenance.
 
+Inspection artifacts also carry a top-level `manifest` section with manifest presence, discovered paths, and any manifest-free fallback decision used for promotion gating.
+
 The inspection artifact is immutable after `inspect`. Live trust state is derived from the history ledger, not by rewriting the original report.
 
 Promotion is never implicit. `inspect` can leave a bundle in `shelter` or `discard`, but only `promote` can move material into `safe_camp`.
+
+By default, promotion requires a supported manifest. A local policy may allow a narrow manifest-free fallback for a single text or JSON file that otherwise passes structural checks. Directories and archives remain outside that fallback scope.
 
 `wilderness verify` is the downstream gate. It exits `0` only when a report is still promotable or already promoted. `--require-promoted` insists on a live `safe_camp` copy.
 
@@ -74,6 +78,12 @@ Supported suspicious-text policy controls are:
 - `suspicious_text_snippet_chars`
 - `suspicious_text_window_lines`
 - `suspicious_text_rule_packs`
+
+Manifest promotion policy controls are:
+
+- `manifest_required_for_promotion`
+- `manifest_free_fallback_enabled`
+- `manifest_free_fallback_scope`
 
 `wilderness suspicious-text-check` explains active rules for a single text file, reports normalized-only matches, and surfaces exclude-pattern suppressions for pack debugging.
 

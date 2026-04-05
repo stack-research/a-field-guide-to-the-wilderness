@@ -40,6 +40,11 @@ class WildernessHardeningTests(unittest.TestCase):
         artifact = json.loads(result.stdout)
         return result, artifact
 
+    def write_manifest_fallback_policy(self) -> Path:
+        policy = self.cwd / "policy.toml"
+        policy.write_text("manifest_free_fallback_enabled = true\n", encoding="utf-8")
+        return policy
+
     def test_forged_manifest_hash_fixture_blocks_promotion(self) -> None:
         fixture = ROOT / "data" / "hostile" / "forged_manifest_hash"
         copied = self.cwd / fixture.name
@@ -69,6 +74,8 @@ class WildernessHardeningTests(unittest.TestCase):
                 for finding in artifact["findings"]
             )
         )
+        self.assertTrue(artifact["manifest"]["present"])
+        self.assertFalse(artifact["manifest"]["fallback_applied"])
 
     def test_wrong_type_manifest_is_invalid(self) -> None:
         manifest = ROOT / "data" / "hostile" / "wrong_type_manifest" / "manifest.json"
@@ -115,6 +122,8 @@ class WildernessHardeningTests(unittest.TestCase):
         policy.write_text(
             textwrap.dedent(
                 """
+                manifest_free_fallback_enabled = true
+
                 [redaction]
                 enabled = true
                 redact_paths = true
@@ -162,6 +171,36 @@ class WildernessHardeningTests(unittest.TestCase):
             )
         )
 
+    def test_manifest_free_fallback_does_not_allow_directory_inputs(self) -> None:
+        fixture = ROOT / "data" / "hostile" / "fanout_case"
+        copied = self.cwd / fixture.name
+        shutil.copytree(fixture, copied)
+        policy = self.cwd / "policy.toml"
+        policy.write_text("manifest_free_fallback_enabled = true\n", encoding="utf-8")
+
+        inspect, artifact = self.inspect_json(copied, "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 10)
+        self.assertFalse(artifact["promotion"]["eligible"])
+        self.assertIn(
+            "manifest-free fallback not allowed for this artifact type",
+            artifact["promotion"]["blocking_reasons"],
+        )
+
+    def test_manifest_free_fallback_does_not_allow_archive_inputs(self) -> None:
+        bundle = self.cwd / "bundle.zip"
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr("notes.txt", "hello")
+        policy = self.cwd / "policy.toml"
+        policy.write_text("manifest_free_fallback_enabled = true\n", encoding="utf-8")
+
+        inspect, artifact = self.inspect_json(bundle, "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 10)
+        self.assertFalse(artifact["promotion"]["eligible"])
+        self.assertIn(
+            "manifest-free fallback not allowed for this artifact type",
+            artifact["promotion"]["blocking_reasons"],
+        )
+
     def test_inspect_returns_review_code_when_not_promotable_but_not_discarded(self) -> None:
         sample = ROOT / "data" / "benign" / "sample.json"
         copied = self.cwd / "sample.json"
@@ -180,6 +219,27 @@ class WildernessHardeningTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("valid: True", result.stdout)
 
+    def test_invalid_manifest_fallback_scope_fails_at_policy_load_time(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+        policy = self.cwd / "policy.toml"
+        policy.write_text(
+            textwrap.dedent(
+                """
+                manifest_free_fallback_enabled = true
+                manifest_free_fallback_scope = "anything"
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_cli("inspect", str(copied), "--policy", str(policy))
+        self.assertEqual(result.returncode, 20)
+        self.assertIn("policy error:", result.stderr)
+        self.assertIn("manifest_free_fallback_scope", result.stderr)
+
     def test_report_snapshot_benign_bundle(self) -> None:
         artifact = self._artifact_for_snapshot(ROOT / "data" / "benign" / "manifest_bundle", "benign-bundle")
         rendered = render_report(artifact)
@@ -187,7 +247,11 @@ class WildernessHardeningTests(unittest.TestCase):
         self.assertEqual(rendered, expected)
 
     def test_report_snapshot_control_sequence_fixture(self) -> None:
-        artifact = self._artifact_for_snapshot(ROOT / "data" / "hostile" / "control-sequence.txt", "hostile-control")
+        artifact = self._artifact_for_snapshot(
+            ROOT / "data" / "hostile" / "control-sequence.txt",
+            "hostile-control",
+            manifest_fallback=True,
+        )
         rendered = render_report(artifact)
         expected = (FIXTURES / "report_hostile_control_sequence.txt").read_text(encoding="utf-8").rstrip("\n")
         self.assertEqual(rendered, expected)
@@ -203,8 +267,9 @@ class WildernessHardeningTests(unittest.TestCase):
         fixture = ROOT / "data" / "hostile" / "suspicious_ignore.txt"
         copied = self.cwd / fixture.name
         shutil.copy2(fixture, copied)
+        policy = self.write_manifest_fallback_policy()
 
-        inspect, artifact = self.inspect_json(copied)
+        inspect, artifact = self.inspect_json(copied, "--policy", str(policy))
         self.assertEqual(inspect.returncode, 0)
         suspicious = [finding for finding in artifact["findings"] if finding["family"] == "suspicious_text"]
         self.assertGreaterEqual(len(suspicious), 2)
@@ -216,8 +281,9 @@ class WildernessHardeningTests(unittest.TestCase):
         fixture = ROOT / "data" / "hostile" / "suspicious_split_prompt.txt"
         copied = self.cwd / fixture.name
         shutil.copy2(fixture, copied)
+        policy = self.write_manifest_fallback_policy()
 
-        inspect, artifact = self.inspect_json(copied)
+        inspect, artifact = self.inspect_json(copied, "--policy", str(policy))
         self.assertEqual(inspect.returncode, 0)
         suspicious = [finding for finding in artifact["findings"] if finding["family"] == "suspicious_text"]
         split_match = next(
@@ -232,8 +298,9 @@ class WildernessHardeningTests(unittest.TestCase):
         fixture = ROOT / "data" / "hostile" / "suspicious_normalized_prompt.txt"
         copied = self.cwd / fixture.name
         shutil.copy2(fixture, copied)
+        policy = self.write_manifest_fallback_policy()
 
-        inspect, artifact = self.inspect_json(copied)
+        inspect, artifact = self.inspect_json(copied, "--policy", str(policy))
         self.assertEqual(inspect.returncode, 0)
         suspicious = [finding for finding in artifact["findings"] if finding["family"] == "suspicious_text"]
         normalized_match = next(
@@ -247,8 +314,9 @@ class WildernessHardeningTests(unittest.TestCase):
         fixture = ROOT / "data" / "hostile" / "suspicious_repeated.txt"
         copied = self.cwd / fixture.name
         shutil.copy2(fixture, copied)
+        policy = self.write_manifest_fallback_policy()
 
-        inspect, artifact = self.inspect_json(copied)
+        inspect, artifact = self.inspect_json(copied, "--policy", str(policy))
         self.assertEqual(inspect.returncode, 0)
         suspicious = [finding for finding in artifact["findings"] if finding["family"] == "suspicious_text"]
         self.assertEqual(len(suspicious), 1)
@@ -258,8 +326,9 @@ class WildernessHardeningTests(unittest.TestCase):
         fixture = ROOT / "data" / "hostile" / "suspicious_many_lines.txt"
         copied = self.cwd / fixture.name
         shutil.copy2(fixture, copied)
+        policy = self.write_manifest_fallback_policy()
 
-        inspect, artifact = self.inspect_json(copied)
+        inspect, artifact = self.inspect_json(copied, "--policy", str(policy))
         self.assertEqual(inspect.returncode, 0)
         suspicious = [finding for finding in artifact["findings"] if finding["family"] == "suspicious_text"]
         self.assertEqual(len(suspicious), 5)
@@ -277,8 +346,9 @@ class WildernessHardeningTests(unittest.TestCase):
         fixture = ROOT / "data" / "hostile" / "suspicious_tool.txt"
         copied = self.cwd / fixture.name
         shutil.copy2(fixture, copied)
+        policy = self.write_manifest_fallback_policy()
 
-        inspect, artifact = self.inspect_json(copied)
+        inspect, artifact = self.inspect_json(copied, "--policy", str(policy))
         self.assertEqual(inspect.returncode, 0)
         self.assertEqual(artifact["status"], "shelter")
         self.assertTrue(artifact["promotion"]["eligible"])
@@ -290,8 +360,9 @@ class WildernessHardeningTests(unittest.TestCase):
         fixture = ROOT / "data" / "benign" / "descriptive_prompts.txt"
         copied = self.cwd / fixture.name
         shutil.copy2(fixture, copied)
+        policy = self.write_manifest_fallback_policy()
 
-        inspect, artifact = self.inspect_json(copied)
+        inspect, artifact = self.inspect_json(copied, "--policy", str(policy))
         self.assertEqual(inspect.returncode, 0)
         suspicious = [finding for finding in artifact["findings"] if finding["family"] == "suspicious_text"]
         self.assertEqual(suspicious, [])
@@ -300,8 +371,9 @@ class WildernessHardeningTests(unittest.TestCase):
         fixture = ROOT / "data" / "benign" / "suspicious_discussion.txt"
         copied = self.cwd / fixture.name
         shutil.copy2(fixture, copied)
+        policy = self.write_manifest_fallback_policy()
 
-        inspect, artifact = self.inspect_json(copied)
+        inspect, artifact = self.inspect_json(copied, "--policy", str(policy))
         self.assertEqual(inspect.returncode, 0)
         suspicious = [finding for finding in artifact["findings"] if finding["family"] == "suspicious_text"]
         self.assertEqual(suspicious, [])
@@ -311,7 +383,10 @@ class WildernessHardeningTests(unittest.TestCase):
         copied = self.cwd / fixture.name
         shutil.copy2(fixture, copied)
         policy = self.cwd / "policy.toml"
-        policy.write_text("suspicious_text_enabled = false\n", encoding="utf-8")
+        policy.write_text(
+            "manifest_free_fallback_enabled = true\nsuspicious_text_enabled = false\n",
+            encoding="utf-8",
+        )
 
         inspect, artifact = self.inspect_json(copied, "--policy", str(policy))
         self.assertEqual(inspect.returncode, 0)
@@ -342,6 +417,7 @@ class WildernessHardeningTests(unittest.TestCase):
         policy.write_text(
             textwrap.dedent(
                 """
+                manifest_free_fallback_enabled = true
                 suspicious_text_rule_packs = ["packs/custom.toml"]
                 """
             ).strip()
@@ -383,6 +459,7 @@ class WildernessHardeningTests(unittest.TestCase):
         policy.write_text(
             textwrap.dedent(
                 """
+                manifest_free_fallback_enabled = true
                 suspicious_text_rule_packs = ["custom.toml"]
                 """
             ).strip()
@@ -430,24 +507,36 @@ class WildernessHardeningTests(unittest.TestCase):
         self.assertFalse((self.cwd / ".wilderness").exists())
 
     def test_report_snapshot_suspicious_fixture(self) -> None:
-        artifact = self._artifact_for_snapshot(ROOT / "data" / "hostile" / "suspicious_ignore.txt", "suspicious-ignore")
+        artifact = self._artifact_for_snapshot(
+            ROOT / "data" / "hostile" / "suspicious_ignore.txt",
+            "suspicious-ignore",
+            manifest_fallback=True,
+        )
         rendered = render_report(artifact)
         expected = (FIXTURES / "report_suspicious_ignore.txt").read_text(encoding="utf-8").rstrip("\n")
         self.assertEqual(rendered, expected)
 
     def test_report_snapshot_benign_prompt_discussion(self) -> None:
-        artifact = self._artifact_for_snapshot(ROOT / "data" / "benign" / "descriptive_prompts.txt", "benign-descriptive")
+        artifact = self._artifact_for_snapshot(
+            ROOT / "data" / "benign" / "descriptive_prompts.txt",
+            "benign-descriptive",
+            manifest_fallback=True,
+        )
         rendered = render_report(artifact)
         expected = (FIXTURES / "report_benign_descriptive_prompts.txt").read_text(encoding="utf-8").rstrip("\n")
         self.assertEqual(rendered, expected)
 
-    def _artifact_for_snapshot(self, source: Path, snapshot_id: str) -> dict:
+    def _artifact_for_snapshot(self, source: Path, snapshot_id: str, manifest_fallback: bool = False) -> dict:
         target = self.cwd / source.name
         if source.is_dir():
             shutil.copytree(source, target)
         else:
             shutil.copy2(source, target)
-        _, artifact = self.inspect_json(target)
+        extra_args = ()
+        if manifest_fallback:
+            policy = self.write_manifest_fallback_policy()
+            extra_args = ("--policy", str(policy))
+        _, artifact = self.inspect_json(target, *extra_args)
         artifact["inspection_id"] = snapshot_id
         return artifact
 

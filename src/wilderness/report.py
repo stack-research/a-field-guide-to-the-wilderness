@@ -80,6 +80,11 @@ def render_report(report: dict) -> str:
             "promotion_blockers: "
             + ", ".join(safe_display(reason) for reason in report["promotion"]["blocking_reasons"])
         )
+    if report.get("manifest"):
+        blockers = report.get("promotion", {}).get("blocking_reasons", [])
+        manifest_blocked = any("manifest" in reason for reason in blockers)
+        if manifest_blocked:
+            lines.append(f"manifest_present: {report['manifest']['present']}")
     if report.get("discard", {}).get("retained"):
         lines.append(f"discard_retained: {report['discard']['retained']}")
         lines.append(f"discard_path: {safe_display(report['discard']['path'])}")

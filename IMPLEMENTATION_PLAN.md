@@ -84,3 +84,11 @@ This checklist feeds the first implementation sprints for `wilderness`.
 - [x] Copy raw quarantined input into discard storage for retained blocked artifacts
 - [x] Record discard retention details in the inspection artifact and history log
 - [x] Surface discard retention in the human report without changing promotion semantics
+
+## Explicit Manifest-Free Promotion Policy
+
+- [x] Add manifest promotion controls to policy
+- [x] Block manifest-free promotion by default
+- [x] Allow a narrow manifest-free fallback for single-file text or JSON inputs
+- [x] Record manifest presence and fallback decisions in the inspection artifact
+- [x] Keep `manifest-check` focused on supported manifest validation only

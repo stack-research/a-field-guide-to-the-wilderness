@@ -590,6 +590,10 @@ def inspect_bundle(
 
     findings.extend(manifest_errors)
 
+    manifest_present = bool(manifest_paths)
+    fallback_applied = False
+    fallback_reason = None
+
     if not manifest_paths:
         findings.append(
             _finding("provenance_gap", "moderate", "no manifest or provenance file found")
@@ -602,6 +606,23 @@ def inspect_bundle(
     promotion_reasons = []
     if blocking:
         promotion_reasons.append("blocking findings present")
+    if not manifest_present and policy.manifest_required_for_promotion:
+        fallback_eligible = (
+            policy.manifest_free_fallback_enabled
+            and policy.manifest_free_fallback_scope == "single_file_text_or_json"
+            and intake.artifact_type in {"file", "json_file"}
+            and len(file_records) == 1
+            and not any(finding["family"] == "nested_archive" for finding in findings)
+            and not blocking
+        )
+        if fallback_eligible:
+            fallback_applied = True
+        else:
+            if not policy.manifest_free_fallback_enabled:
+                fallback_reason = "manifest required for promotion"
+            else:
+                fallback_reason = "manifest-free fallback not allowed for this artifact type"
+            promotion_reasons.append(fallback_reason)
     if policy.redaction_required and not redaction_applied:
         promotion_reasons.append("redaction required by policy but no changes were applied")
 
@@ -616,6 +637,13 @@ def inspect_bundle(
         "inspection_id": intake.inspection_id,
         "received_at": intake.provenance["received_at"],
         "suspicious_text": suspicious_text_summary(suspicious_text_rules),
+        "manifest": {
+            "present": manifest_present,
+            "paths": manifest_paths,
+            "required_for_promotion": policy.manifest_required_for_promotion,
+            "fallback_applied": fallback_applied,
+            "fallback_scope": policy.manifest_free_fallback_scope,
+        },
         "discard": {
             "retained": False,
             "path": None,
