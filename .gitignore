@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+.Python
+build/
+dist/
+site/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+*.egg
+.venv/
+venv/
+env/
+ENV/
+.tox/
+.nox/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+pip-wheel-metadata/
+.ipynb_checkpoints/
+
+# Project runtime state
+.wilderness/
+.codex/
+.cursor/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100/
+.TemporaryItems/
+.Trashes/
+.fseventsd
+
+# Linux / Unix
+*~
+.#*
+.directory
+.Trash-*/
+lost+found/
+.nfs*
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp

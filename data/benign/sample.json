@@ -1,0 +1,9 @@
+{
+  "manifest": {
+    "source_name": "sample.json"
+  },
+  "notes": [
+    "safe example",
+    "terminal-native"
+  ]
+}
