@@ -304,6 +304,14 @@ Promotion should never happen implicitly because a parser "handled" the content.
 
 If redaction is enabled and changes content, the system should materialize a full redacted derivative beside shelter output instead of mutating shelter in place. When policy requires redaction, promotion and downstream verification should follow that derivative rather than the original shelter tree.
 
+The tool should also expose the effective downstream-ready tree directly. By default that resolution order should be:
+
+- live promoted safe-camp copy, if one exists
+- required redacted derivative, if redaction is required and available
+- normalized shelter output otherwise
+
+Operators and downstream tools should be able to ask for that resolved source explicitly and export a copy without re-implementing trust-path logic.
+
 ## Redaction and Privacy
 
 The tool should treat privacy and safety as adjacent concerns.
@@ -344,6 +352,9 @@ camp promote inspection.json
 # Verify that a report is still promotable or already promoted
 camp verify inspection.json
 
+# Resolve or export the exact downstream-ready tree
+camp source inspection.json
+
 # Explain suspicious-text matches for one file
 camp suspicious-text-check suspicious.txt
 
@@ -360,6 +371,7 @@ The command names are placeholders. The important point is the workflow shape:
 - report
 - promote
 - verify
+- source
 - suspicious-text-check
 - validate
 
@@ -461,7 +473,7 @@ The first release is successful if it can:
 4. preserve provenance and redaction history
 5. integrate cleanly with a downstream customer that refuses uninspected bundles
 
-For the first terminal-native integration path, that downstream customer should be able to shell out to `verify` and rely on its exit code instead of re-implementing trust logic.
+For the first terminal-native integration path, that downstream customer should be able to shell out to `verify` and rely on its exit code instead of re-implementing trust logic. When it needs the exact downstream-ready tree, it should be able to shell out to `source` instead of reconstructing source-selection rules itself.
 
 ## Open Questions
 

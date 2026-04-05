@@ -36,20 +36,184 @@ def _report_path(state_root: Path, inspection_id: str) -> Path:
     return state_root / "reports" / f"{inspection_id}.json"
 
 
-def _effective_source(artifact: dict) -> tuple[Path | None, str | None, str | None]:
+def _source_resolution(
+    *,
+    available: bool,
+    resolved_from: str | None,
+    origin: str | None,
+    path: Path | None,
+    sha256: str | None,
+    error: str | None,
+) -> dict:
+    return {
+        "available": available,
+        "resolved_from": resolved_from,
+        "origin": origin,
+        "path": str(path.resolve()) if path is not None else None,
+        "sha256": sha256,
+        "error": error,
+    }
+
+
+def _resolve_report_source(artifact: dict) -> dict:
     redaction = artifact.get("redaction", {})
     if redaction.get("required"):
         path = redaction.get("path")
         if not redaction.get("available") or not path:
-            return None, None, "required redacted derivative is missing"
-        return Path(path), redaction.get("normalized_sha256"), None
+            return _source_resolution(
+                available=False,
+                resolved_from="redacted",
+                origin="report_state",
+                path=None,
+                sha256=None,
+                error="required redacted derivative is missing",
+            )
+        return _source_resolution(
+            available=True,
+            resolved_from="redacted",
+            origin="report_state",
+            path=Path(path),
+            sha256=redaction.get("normalized_sha256"),
+            error=None,
+        )
 
     provenance = artifact["provenance"]
-    return (
-        Path(provenance["normalized_path"]),
-        provenance["normalized_sha256"],
-        None,
+    normalized_path = provenance.get("normalized_path")
+    if normalized_path is None:
+        return _source_resolution(
+            available=False,
+            resolved_from="shelter",
+            origin="report_state",
+            path=None,
+            sha256=None,
+            error="normalized shelter output is unavailable",
+        )
+    return _source_resolution(
+        available=True,
+        resolved_from="shelter",
+        origin="report_state",
+        path=Path(normalized_path),
+        sha256=provenance.get("normalized_sha256"),
+        error=None,
     )
+
+
+def _resolve_source(artifact: dict, mode: str = "auto") -> dict:
+    if mode == "auto":
+        promoted = _resolve_source(artifact, "promoted")
+        if promoted["available"]:
+            return promoted
+        return _resolve_source(artifact, "effective")
+    if mode == "effective":
+        return _resolve_report_source(artifact)
+    if mode == "promoted":
+        target_path = _promoted_target_path(artifact)
+        if target_path is None:
+            return _source_resolution(
+                available=False,
+                resolved_from="promoted",
+                origin="live_safe_camp",
+                path=None,
+                sha256=None,
+                error="promoted safe-camp copy is missing",
+            )
+        path = Path(target_path)
+        if not path.exists():
+            return _source_resolution(
+                available=False,
+                resolved_from="promoted",
+                origin="live_safe_camp",
+                path=path,
+                sha256=None,
+                error="promoted safe-camp copy is missing",
+            )
+        return _source_resolution(
+            available=True,
+            resolved_from="promoted",
+            origin="live_safe_camp",
+            path=path,
+            sha256=sha256_directory(path),
+            error=None,
+        )
+    if mode == "redacted":
+        redaction = artifact.get("redaction", {})
+        path = redaction.get("path")
+        if not redaction.get("available") or not path:
+            return _source_resolution(
+                available=False,
+                resolved_from="redacted",
+                origin="report_state",
+                path=None,
+                sha256=None,
+                error="redacted derivative is missing",
+            )
+        return _source_resolution(
+            available=True,
+            resolved_from="redacted",
+            origin="report_state",
+            path=Path(path),
+            sha256=redaction.get("normalized_sha256"),
+            error=None,
+        )
+    if mode == "shelter":
+        provenance = artifact["provenance"]
+        normalized_path = provenance.get("normalized_path")
+        if normalized_path is None:
+            return _source_resolution(
+                available=False,
+                resolved_from="shelter",
+                origin="report_state",
+                path=None,
+                sha256=None,
+                error="normalized shelter output is unavailable",
+            )
+        return _source_resolution(
+            available=True,
+            resolved_from="shelter",
+            origin="report_state",
+            path=Path(normalized_path),
+            sha256=provenance.get("normalized_sha256"),
+            error=None,
+        )
+    raise ValueError(f"unsupported source mode: {mode}")
+
+
+def _current_source_error(resolution: dict) -> str | None:
+    if not resolution["available"]:
+        return resolution["error"] or "effective source is unavailable"
+    path_value = resolution.get("path")
+    sha256 = resolution.get("sha256")
+    if path_value is None:
+        return resolution["error"] or "effective source is unavailable"
+    path = Path(path_value)
+    if resolution["resolved_from"] == "promoted":
+        if not path.exists():
+            return "promoted safe-camp copy is missing"
+        return None
+    if sha256 is None:
+        return "effective source digest is unavailable"
+    if not path.exists():
+        if resolution["resolved_from"] == "redacted":
+            return "required redacted derivative is missing"
+        return "normalized shelter output is missing"
+    current_digest = sha256_directory(path)
+    if current_digest != sha256:
+        if resolution["resolved_from"] == "redacted":
+            return "inspection artifact is stale or redacted contents changed"
+        return "inspection artifact is stale or shelter contents changed"
+    return None
+
+
+def _replace_tree(source: Path, target: Path) -> None:
+    if source.resolve() == target.resolve():
+        raise ValueError("export destination cannot be the same as the resolved source")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+    shutil.copytree(source, target)
 
 
 def _current_blocking_reasons(artifact: dict) -> list[str]:
@@ -57,21 +221,9 @@ def _current_blocking_reasons(artifact: dict) -> list[str]:
     if reasons:
         return reasons
 
-    source_path, expected_digest, source_error = _effective_source(artifact)
+    source_error = _current_source_error(_resolve_source(artifact, "effective"))
     if source_error is not None:
         return [source_error]
-    if source_path is None or expected_digest is None:
-        return ["effective promotion source is unavailable"]
-    if not source_path.exists():
-        if artifact.get("redaction", {}).get("required"):
-            return ["required redacted derivative is missing"]
-        return ["normalized shelter output is missing"]
-
-    current_digest = sha256_directory(source_path)
-    if current_digest != expected_digest:
-        if artifact.get("redaction", {}).get("required"):
-            return ["inspection artifact is stale or redacted contents changed"]
-        return ["inspection artifact is stale or shelter contents changed"]
     return []
 
 
@@ -83,8 +235,7 @@ def _promoted_target_path(artifact: dict) -> str | None:
 
 
 def _is_currently_promoted(artifact: dict) -> bool:
-    target_path = _promoted_target_path(artifact)
-    return target_path is not None and Path(target_path).exists()
+    return _resolve_source(artifact, "promoted")["available"]
 
 
 def _inspect_exit_code(artifact: dict) -> int:
@@ -217,10 +368,12 @@ def cmd_promote(args: argparse.Namespace) -> int:
         print("promotion blocked: " + ", ".join(blockers))
         return EXIT_BLOCKED
 
-    source_path, _, source_error = _effective_source(artifact)
-    if source_error is not None or source_path is None:
+    resolution = _resolve_source(artifact, "effective")
+    source_error = _current_source_error(resolution)
+    if source_error is not None or resolution["path"] is None:
         print("promotion blocked: " + (source_error or "effective promotion source is unavailable"))
         return EXIT_BLOCKED
+    source_path = Path(resolution["path"])
     target = Path(policy.state_root) / "safe-camp" / artifact["inspection_id"]
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
@@ -235,6 +388,57 @@ def cmd_promote(args: argparse.Namespace) -> int:
         ),
     )
     print(f"promoted_to: {target}")
+    return EXIT_OK
+
+
+def cmd_source(args: argparse.Namespace) -> int:
+    artifact = load_report(args.report)
+    resolution = _resolve_source(artifact, args.mode)
+    source_error = _current_source_error(resolution)
+    if source_error is not None:
+        print(f"source unavailable: {source_error}")
+        return EXIT_BLOCKED
+
+    path_value = resolution["path"]
+    if path_value is None:
+        print("source unavailable: effective source is unavailable")
+        return EXIT_BLOCKED
+
+    source_path = Path(path_value)
+    if args.out:
+        destination = Path(args.out).expanduser().resolve()
+        try:
+            _replace_tree(source_path, destination)
+        except ValueError as error:
+            print(f"source unavailable: {error}")
+            return EXIT_BLOCKED
+    else:
+        destination = None
+
+    payload = {
+        "inspection_id": artifact["inspection_id"],
+        "resolved_source": "directory",
+        "resolved_from": resolution["resolved_from"],
+        "origin": resolution["origin"],
+        "path": str(source_path.resolve()),
+        "sha256": resolution["sha256"],
+        "available": True,
+    }
+    if destination is not None:
+        payload["exported_to"] = str(destination)
+
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"inspection_id: {payload['inspection_id']}")
+        print(f"resolved_source: {payload['resolved_source']}")
+        print(f"resolved_from: {payload['resolved_from']}")
+        print(f"origin: {payload['origin']}")
+        print(f"path: {payload['path']}")
+        print(f"sha256: {payload['sha256']}")
+        print(f"available: {payload['available']}")
+        if destination is not None:
+            print(f"exported_to: {destination}")
     return EXIT_OK
 
 
@@ -397,6 +601,17 @@ def build_parser() -> argparse.ArgumentParser:
     promote_parser.add_argument("report")
     promote_parser.add_argument("--policy")
     promote_parser.set_defaults(func=cmd_promote)
+
+    source_parser = subparsers.add_parser("source")
+    source_parser.add_argument("report")
+    source_parser.add_argument("--json", action="store_true")
+    source_parser.add_argument("--out")
+    source_parser.add_argument(
+        "--mode",
+        choices=("auto", "promoted", "redacted", "shelter"),
+        default="auto",
+    )
+    source_parser.set_defaults(func=cmd_source)
 
     manifest_parser = subparsers.add_parser("manifest-check")
     manifest_parser.add_argument("input")

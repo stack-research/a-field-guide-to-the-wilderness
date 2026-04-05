@@ -116,3 +116,11 @@ This checklist feeds the first implementation sprints for `wilderness`.
 - [x] Let local policy turn selected suspicious-text findings into promotion blockers
 - [x] Record suspicious-text gating metadata in the inspection artifact
 - [x] Surface blocking suspicious-text counts in the human report
+
+## Effective Source Resolve And Export
+
+- [x] Add `source` as an explicit CLI for downstream source resolution
+- [x] Reuse one internal resolver for report-derived and promoted source selection
+- [x] Prefer live safe-camp output in auto mode, with explicit `promoted`, `redacted`, and `shelter` overrides
+- [x] Add machine-readable JSON output and directory export support
+- [x] Keep `promote` and `verify` aligned with the shared effective-source resolver

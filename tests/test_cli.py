@@ -163,6 +163,160 @@ class WildernessCliTests(unittest.TestCase):
         self.assertEqual(require_promoted.returncode, 0, require_promoted.stdout + require_promoted.stderr)
         self.assertIn("verified: promoted", require_promoted.stdout)
 
+    def test_source_resolves_shelter_for_promotable_artifact(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+        policy = self.write_manifest_fallback_policy()
+
+        inspect = self.run_cli("inspect", str(copied), "--json", "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 0, inspect.stderr)
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+
+        result = self.run_cli("source", str(report_path), "--json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["available"])
+        self.assertEqual(payload["resolved_source"], "directory")
+        self.assertEqual(payload["resolved_from"], "shelter")
+        self.assertEqual(payload["origin"], "report_state")
+        self.assertEqual(payload["path"], artifact["provenance"]["normalized_path"])
+        self.assertEqual(payload["sha256"], artifact["provenance"]["normalized_sha256"])
+
+    def test_source_resolves_redacted_when_required_and_available(self) -> None:
+        sample = self.cwd / "sample.txt"
+        sample.write_text(
+            "token=abc123\npath=/Users/tester/project/file.txt\n",
+            encoding="utf-8",
+        )
+        policy = self.cwd / "policy.toml"
+        policy.write_text(
+            textwrap.dedent(
+                """
+                manifest_free_fallback_enabled = true
+                redaction_required = true
+
+                [redaction]
+                enabled = true
+                redact_paths = true
+                redact_secrets = true
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        inspect = self.run_cli("inspect", str(sample), "--json", "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 0, inspect.stderr)
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+
+        result = self.run_cli("source", str(report_path), "--json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["resolved_from"], "redacted")
+        self.assertEqual(payload["origin"], "report_state")
+        self.assertEqual(payload["path"], artifact["redaction"]["path"])
+        self.assertEqual(payload["sha256"], artifact["redaction"]["normalized_sha256"])
+
+    def test_source_prefers_promoted_copy_after_promotion(self) -> None:
+        sample = self.cwd / "sample.txt"
+        sample.write_text(
+            "token=abc123\npath=/Users/tester/project/file.txt\n",
+            encoding="utf-8",
+        )
+        policy = self.cwd / "policy.toml"
+        policy.write_text(
+            textwrap.dedent(
+                """
+                manifest_free_fallback_enabled = true
+                redaction_required = true
+
+                [redaction]
+                enabled = true
+                redact_paths = true
+                redact_secrets = true
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        inspect = self.run_cli("inspect", str(sample), "--json", "--policy", str(policy))
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+
+        promote = self.run_cli("promote", str(report_path), "--policy", str(policy))
+        self.assertEqual(promote.returncode, 0, promote.stdout + promote.stderr)
+        promoted_target = str(
+            (self.cwd / Path(promote.stdout.strip().split("promoted_to: ", 1)[1])).resolve()
+        )
+
+        result = self.run_cli("source", str(report_path), "--json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["resolved_from"], "promoted")
+        self.assertEqual(payload["origin"], "live_safe_camp")
+        self.assertEqual(payload["path"], promoted_target)
+
+    def test_source_mode_promoted_requires_live_safe_camp(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+        policy = self.write_manifest_fallback_policy()
+
+        inspect = self.run_cli("inspect", str(copied), "--json", "--policy", str(policy))
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+
+        before = self.run_cli("source", str(report_path), "--mode", "promoted")
+        self.assertEqual(before.returncode, 20)
+        self.assertIn("promoted safe-camp copy is missing", before.stdout)
+
+        promote = self.run_cli("promote", str(report_path), "--policy", str(policy))
+        self.assertEqual(promote.returncode, 0, promote.stdout + promote.stderr)
+
+        after = self.run_cli("source", str(report_path), "--mode", "promoted", "--json")
+        self.assertEqual(after.returncode, 0, after.stdout + after.stderr)
+        payload = json.loads(after.stdout)
+        self.assertEqual(payload["resolved_from"], "promoted")
+
+    def test_source_mode_redacted_fails_when_missing(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+        policy = self.write_manifest_fallback_policy()
+
+        inspect = self.run_cli("inspect", str(copied), "--json", "--policy", str(policy))
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+
+        result = self.run_cli("source", str(report_path), "--mode", "redacted")
+        self.assertEqual(result.returncode, 20)
+        self.assertIn("redacted derivative is missing", result.stdout)
+
+    def test_source_out_exports_resolved_tree(self) -> None:
+        sample = ROOT / "data" / "benign" / "sample.json"
+        copied = self.cwd / "sample.json"
+        shutil.copy2(sample, copied)
+        policy = self.write_manifest_fallback_policy()
+
+        inspect = self.run_cli("inspect", str(copied), "--json", "--policy", str(policy))
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+        export_target = self.cwd / "exported"
+        export_target.mkdir()
+        (export_target / "stale.txt").write_text("stale\n", encoding="utf-8")
+
+        result = self.run_cli("source", str(report_path), "--out", str(export_target), "--json")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["exported_to"], str(export_target.resolve()))
+        exported_file = next(export_target.rglob("sample.json"))
+        self.assertEqual(exported_file.read_text(encoding="utf-8"), copied.read_text(encoding="utf-8"))
+        self.assertFalse((export_target / "stale.txt").exists())
+
     def test_verify_blocks_discarded_artifact(self) -> None:
         bundle = self.cwd / "traversal.zip"
         with zipfile.ZipFile(bundle, "w") as archive:
@@ -284,6 +438,38 @@ class WildernessCliTests(unittest.TestCase):
         verify = self.run_cli("verify", str(report_path))
         self.assertEqual(verify.returncode, 20)
         self.assertIn("required redacted derivative is missing", verify.stdout)
+
+    def test_source_fails_when_required_redacted_derivative_is_missing(self) -> None:
+        sample = self.cwd / "sample.txt"
+        sample.write_text(
+            "token=abc123\npath=/Users/tester/project/file.txt\n",
+            encoding="utf-8",
+        )
+        policy = self.cwd / "policy.toml"
+        policy.write_text(
+            textwrap.dedent(
+                """
+                manifest_free_fallback_enabled = true
+                redaction_required = true
+
+                [redaction]
+                enabled = true
+                redact_paths = true
+                redact_secrets = true
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        inspect = self.run_cli("inspect", str(sample), "--json", "--policy", str(policy))
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+        shutil.rmtree(Path(artifact["redaction"]["path"]))
+
+        result = self.run_cli("source", str(report_path))
+        self.assertEqual(result.returncode, 20)
+        self.assertIn("required redacted derivative is missing", result.stdout)
 
     def test_discard_retention_can_copy_quarantine_input(self) -> None:
         bundle = self.cwd / "traversal.zip"

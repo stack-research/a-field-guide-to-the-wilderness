@@ -34,6 +34,7 @@ wilderness inspect bundle.zip --out shelter-copy/
 wilderness report .wilderness/reports/<inspection-id>.json
 wilderness promote .wilderness/reports/<inspection-id>.json
 wilderness verify .wilderness/reports/<inspection-id>.json
+wilderness source .wilderness/reports/<inspection-id>.json
 wilderness suspicious-text-check suspicious.txt
 wilderness manifest-check bundle.zip
 ```
@@ -76,6 +77,8 @@ Only one supported manifest may appear in an inspected artifact. Parse failures,
 For embedded manifests, `raw_sha256` is checked against the bundle payload the manifest describes, excluding the manifest file itself so the digest is not self-referential.
 
 `wilderness verify` is the downstream gate. It exits `0` only when a report is still promotable or already promoted. `--require-promoted` insists on a live `safe_camp` copy.
+
+`wilderness source` resolves the exact downstream-ready tree the system would use. By default it prefers a live promoted `safe_camp` copy when one exists, otherwise it falls back to the effective report-derived source: required redacted derivative first, normalized shelter output otherwise. `--mode` can force `promoted`, `redacted`, or `shelter`, `--json` makes the result machine-readable, and `--out` copies the resolved tree to a chosen destination.
 
 Suspicious-text findings are advisory by default. A local policy may also turn all suspicious-text findings, or selected suspicious-text `rule_id` values, into promotion blockers without changing the detector itself.
 
@@ -131,6 +134,7 @@ Discard-retention policy controls are:
 - `wilderness inspect`: `0` promotable, `10` completed but review-needed, `20` discard or blocked
 - `wilderness promote`: `0` promoted, `20` blocked or stale
 - `wilderness verify`: `0` promotable or promoted, `20` blocked, stale, or not yet promoted when `--require-promoted` is set
+- `wilderness source`: `0` resolved and optionally exported, `20` missing, stale, or unavailable requested source
 - `wilderness suspicious-text-check`: `0` successful check or rule listing, `20` invalid input, non-text input, or invalid policy/rule pack
 - `wilderness manifest-check`: `0` valid supported manifests, `20` invalid or missing supported manifests
 - `wilderness report`: `0` on successful render
