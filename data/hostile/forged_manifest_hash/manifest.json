@@ -1,4 +1,7 @@
 {
-  "sha256": "deadbeef",
-  "source_name": "forged_manifest_hash"
+  "schema_version": 1,
+  "source_name": "forged_manifest_hash",
+  "raw_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "raw_size_bytes": 221,
+  "source_kind": "directory"
 }

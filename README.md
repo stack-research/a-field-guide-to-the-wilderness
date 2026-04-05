@@ -48,13 +48,28 @@ When policy enables forensic retention for blocked artifacts, `inspect` also cop
 
 Inspection artifacts now also carry a top-level `suspicious_text` section with normalization metadata, built-in rule counts, and loaded pack provenance.
 
-Inspection artifacts also carry a top-level `manifest` section with manifest presence, discovered paths, and any manifest-free fallback decision used for promotion gating.
+Inspection artifacts also carry a top-level `manifest` section with manifest presence, discovered paths, schema validation status, normalized claims, and any manifest-free fallback decision used for promotion gating.
 
 The inspection artifact is immutable after `inspect`. Live trust state is derived from the history ledger, not by rewriting the original report.
 
 Promotion is never implicit. `inspect` can leave a bundle in `shelter` or `discard`, but only `promote` can move material into `safe_camp`.
 
 By default, promotion requires a supported manifest. A local policy may allow a narrow manifest-free fallback for a single text or JSON file that otherwise passes structural checks. Directories and archives remain outside that fallback scope.
+
+Supported manifests now use an explicit v1 schema. Required fields are:
+
+- `schema_version = 1`
+- `source_name`
+- `raw_sha256`
+
+Optional fields are:
+
+- `raw_size_bytes`
+- `source_kind`
+
+Only one supported manifest may appear in an inspected artifact. Parse failures, missing required fields, invalid hash format, unknown schema versions, or multiple supported manifests block promotion.
+
+For embedded manifests, `raw_sha256` is checked against the bundle payload the manifest describes, excluding the manifest file itself so the digest is not self-referential.
 
 `wilderness verify` is the downstream gate. It exits `0` only when a report is still promotable or already promoted. `--require-promoted` insists on a live `safe_camp` copy.
 

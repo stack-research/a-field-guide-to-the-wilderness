@@ -92,3 +92,11 @@ This checklist feeds the first implementation sprints for `wilderness`.
 - [x] Allow a narrow manifest-free fallback for single-file text or JSON inputs
 - [x] Record manifest presence and fallback decisions in the inspection artifact
 - [x] Keep `manifest-check` focused on supported manifest validation only
+
+## Explicit Manifest Schema And Provenance Contract
+
+- [x] Define a manifest schema v1 with required identity claims
+- [x] Enforce exactly one supported manifest per inspected artifact
+- [x] Block malformed manifests and invalid manifest claims during `inspect` and `manifest-check`
+- [x] Record manifest validation status, schema version, and normalized claims in the inspection artifact
+- [x] Tighten manifest provenance comparison beyond simple presence checks

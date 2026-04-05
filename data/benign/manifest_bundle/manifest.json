@@ -1,3 +1,7 @@
 {
-  "source_name": "manifest_bundle"
+  "schema_version": 1,
+  "source_name": "manifest_bundle",
+  "raw_sha256": "7891035f289e6e2660818cb19d77b0a63f04d92345b393058c1a582c0c5b7fa5",
+  "raw_size_bytes": 216,
+  "source_kind": "directory"
 }

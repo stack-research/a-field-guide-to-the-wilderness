@@ -5,4 +5,4 @@ files: 2
 promotion_eligible: False
 severity_counts: severe=1
 promotion_blockers: blocking findings present
-[severe] provenance_gap manifest.json :: manifest hash does not match quarantined input
+[severe] provenance_gap manifest.json :: manifest raw_sha256 does not match quarantined payload

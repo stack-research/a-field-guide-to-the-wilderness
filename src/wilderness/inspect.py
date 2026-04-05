@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -28,6 +29,9 @@ SUPPORTED_MANIFEST_NAMES = {
     "manifest.toml",
     "provenance.json",
 }
+MANIFEST_SCHEMA_VERSION = 1
+_MANIFEST_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_MANIFEST_SOURCE_KINDS = {"file", "directory"}
 _SUSPICIOUS_TEXT_FLAGS = re.IGNORECASE | re.MULTILINE | re.DOTALL
 SUSPICIOUS_TEXT_NORMALIZATION_VERSION = "1"
 _BUILTIN_EXCLUDE_PATTERN = (
@@ -112,6 +116,15 @@ class SuspiciousTextScanResult:
     suppressed_matches: tuple[dict, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ParsedManifest:
+    path: str
+    schema_version: int | None
+    claims: dict
+    validated: bool
+    findings: tuple[dict, ...]
+
+
 def _finding(
     family: str,
     severity: str,
@@ -146,17 +159,128 @@ def _parse_manifest(path: Path, data: bytes) -> tuple[dict | None, dict | None]:
     return manifest, None
 
 
-def _manifest_mismatch(manifest: dict, raw_sha256: str, source_name: str, path: Path) -> list[dict]:
-    findings = []
-    claimed_hash = manifest.get("sha256") or manifest.get("raw_sha256") or manifest.get("source_sha256")
-    if claimed_hash and claimed_hash != raw_sha256:
+def _parse_manifest_schema(path: Path, manifest: dict) -> ParsedManifest:
+    findings: list[dict] = []
+    claims: dict[str, str | int] = {}
+    schema_version = manifest.get("schema_version")
+    if type(schema_version) is int and schema_version == MANIFEST_SCHEMA_VERSION:
+        normalized_schema_version: int | None = schema_version
+    else:
+        normalized_schema_version = schema_version if type(schema_version) is int else None
         findings.append(
-            _finding("provenance_gap", "severe", "manifest hash does not match quarantined input", str(path))
+            _finding(
+                "schema_violation",
+                "severe",
+                f"schema_version must be {MANIFEST_SCHEMA_VERSION}",
+                str(path),
+            )
         )
-    claimed_name = manifest.get("source_name") or manifest.get("input_name")
-    if claimed_name and claimed_name != source_name:
+
+    source_name = manifest.get("source_name")
+    if isinstance(source_name, str) and source_name.strip():
+        claims["source_name"] = source_name
+    else:
         findings.append(
-            _finding("provenance_gap", "moderate", "manifest source name does not match input name", str(path))
+            _finding("schema_violation", "severe", "source_name must be a non-empty string", str(path))
+        )
+
+    raw_sha256 = manifest.get("raw_sha256")
+    if isinstance(raw_sha256, str) and _MANIFEST_SHA256_RE.fullmatch(raw_sha256):
+        claims["raw_sha256"] = raw_sha256
+    else:
+        findings.append(
+            _finding(
+                "schema_violation",
+                "severe",
+                "raw_sha256 must be a 64-character lowercase hex string",
+                str(path),
+            )
+        )
+
+    if "raw_size_bytes" in manifest:
+        raw_size_bytes = manifest.get("raw_size_bytes")
+        if type(raw_size_bytes) is int and raw_size_bytes > 0:
+            claims["raw_size_bytes"] = raw_size_bytes
+        else:
+            findings.append(
+                _finding(
+                    "schema_violation",
+                    "severe",
+                    "raw_size_bytes must be a positive integer",
+                    str(path),
+                )
+            )
+
+    if "source_kind" in manifest:
+        source_kind = manifest.get("source_kind")
+        if isinstance(source_kind, str) and source_kind in _MANIFEST_SOURCE_KINDS:
+            claims["source_kind"] = source_kind
+        else:
+            findings.append(
+                _finding(
+                    "schema_violation",
+                    "severe",
+                    "source_kind must be 'file' or 'directory'",
+                    str(path),
+                )
+            )
+
+    return ParsedManifest(
+        path=str(path),
+        schema_version=normalized_schema_version,
+        claims=claims,
+        validated=not findings,
+        findings=tuple(findings),
+    )
+
+
+def _manifest_payload_sha256(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
+        rel_path = path.relative_to(root)
+        if _is_supported_manifest(rel_path):
+            continue
+        digest.update(str(rel_path).encode("utf-8"))
+        digest.update(sha256_file(path).encode("ascii"))
+    return digest.hexdigest()
+
+
+def _manifest_mismatch(
+    claims: dict,
+    payload_sha256: str,
+    raw_size_bytes: int,
+    source_name: str,
+    source_kind: str,
+    path: str,
+) -> list[dict]:
+    findings = []
+    claimed_hash = claims.get("raw_sha256")
+    if claimed_hash == payload_sha256:
+        pass
+    elif claimed_hash:
+        findings.append(
+            _finding("provenance_gap", "severe", "manifest raw_sha256 does not match quarantined payload", path)
+        )
+    claimed_name = claims.get("source_name")
+    if claimed_name == source_name:
+        pass
+    elif claimed_name:
+        findings.append(
+            _finding("provenance_gap", "severe", "manifest source_name does not match input name", path)
+        )
+    claimed_size = claims.get("raw_size_bytes")
+    if claimed_size == raw_size_bytes:
+        pass
+    elif claimed_size is not None:
+        findings.append(
+            _finding("provenance_gap", "severe", "manifest raw_size_bytes does not match quarantined input", path)
+        )
+    claimed_kind = claims.get("source_kind")
+    if claimed_kind == source_kind:
+        pass
+    elif claimed_kind is not None:
+        findings.append(
+            _finding("provenance_gap", "severe", "manifest source_kind does not match input kind", path)
         )
     return findings
 
@@ -508,7 +632,8 @@ def inspect_bundle(
     findings = list(unpacked.findings)
     file_records = []
     manifest_paths = []
-    manifest_errors = []
+    parsed_manifests: list[ParsedManifest] = []
+    manifest_findings = []
     redaction_applied = False
 
     for path in sorted(candidate for candidate in unpacked.normalized_output_path.rglob("*") if candidate.is_file()):
@@ -570,16 +695,9 @@ def inspect_bundle(
                 manifest_paths.append(str(rel_path))
                 manifest, parse_error = _parse_manifest(rel_path, data)
                 if parse_error:
-                    manifest_errors.append(parse_error)
+                    manifest_findings.append(parse_error)
                 elif manifest is not None:
-                    findings.extend(
-                        _manifest_mismatch(
-                            manifest,
-                            intake.provenance["raw_sha256"],
-                            intake.source_path.name,
-                            rel_path,
-                        )
-                    )
+                    parsed_manifests.append(_parse_manifest_schema(rel_path, manifest))
 
             if policy.redaction.enabled:
                 redacted, changed = redact_bytes(data, policy)
@@ -588,13 +706,44 @@ def inspect_bundle(
                     redaction_applied = True
         file_records.append(file_record)
 
-    findings.extend(manifest_errors)
-
     manifest_present = bool(manifest_paths)
+    manifest_validated = False
+    manifest_schema_version: int | None = None
+    manifest_claims: dict[str, str | int] = {}
+
+    if len(manifest_paths) > 1:
+        manifest_findings.append(
+            _finding(
+                "schema_violation",
+                "severe",
+                "multiple supported manifests found",
+                ", ".join(manifest_paths),
+            )
+        )
+    elif len(parsed_manifests) == 1:
+        parsed_manifest = parsed_manifests[0]
+        manifest_schema_version = parsed_manifest.schema_version
+        manifest_claims = parsed_manifest.claims
+        manifest_validated = parsed_manifest.validated
+        manifest_findings.extend(parsed_manifest.findings)
+        if parsed_manifest.validated:
+            findings.extend(
+                _manifest_mismatch(
+                    parsed_manifest.claims,
+                    _manifest_payload_sha256(unpacked.normalized_output_path),
+                    intake.provenance["raw_size_bytes"],
+                    intake.source_path.name,
+                    intake.provenance["input"]["source_kind"],
+                    parsed_manifest.path,
+                )
+            )
+
+    findings.extend(manifest_findings)
+
     fallback_applied = False
     fallback_reason = None
 
-    if not manifest_paths:
+    if not manifest_present:
         findings.append(
             _finding("provenance_gap", "moderate", "no manifest or provenance file found")
         )
@@ -643,6 +792,9 @@ def inspect_bundle(
             "required_for_promotion": policy.manifest_required_for_promotion,
             "fallback_applied": fallback_applied,
             "fallback_scope": policy.manifest_free_fallback_scope,
+            "validated": manifest_validated,
+            "schema_version": manifest_schema_version,
+            "claims": manifest_claims,
         },
         "discard": {
             "retained": False,
@@ -672,14 +824,20 @@ def inspect_bundle(
 def manifest_check(path: str) -> dict:
     source = Path(path).expanduser().resolve()
     manifests = []
-    parse_errors = []
+    manifest_errors = []
+    parsed_manifests: list[ParsedManifest] = []
 
     def parse_candidate(candidate: Path, data: bytes | None = None) -> None:
         payload = data if data is not None else candidate.read_bytes()
         manifest, error = _parse_manifest(candidate, payload)
         manifests.append(str(candidate))
         if error:
-            parse_errors.append(error)
+            manifest_errors.append(error)
+            return
+        if manifest is not None:
+            parsed = _parse_manifest_schema(candidate, manifest)
+            parsed_manifests.append(parsed)
+            manifest_errors.extend(parsed.findings)
 
     if source.is_dir():
         for candidate in sorted(source.rglob("*")):
@@ -712,9 +870,19 @@ def manifest_check(path: str) -> dict:
                         continue
                     parse_candidate(Path(member.name), handle.read())
 
+    if len(manifests) > 1:
+        manifest_errors.append(
+            _finding(
+                "schema_violation",
+                "severe",
+                "multiple supported manifests found",
+                ", ".join(manifests),
+            )
+        )
+
     return {
         "input": str(source),
         "manifests": manifests,
-        "valid": not parse_errors and bool(manifests),
-        "errors": parse_errors,
+        "valid": bool(manifests) and len(manifests) == 1 and not manifest_errors and len(parsed_manifests) == 1,
+        "errors": manifest_errors,
     }

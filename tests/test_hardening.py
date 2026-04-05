@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -14,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 sys.path.insert(0, str(ROOT / "src"))
 
+from wilderness.common import sha256_file
 from wilderness.report import render_report
 
 
@@ -45,6 +47,15 @@ class WildernessHardeningTests(unittest.TestCase):
         policy.write_text("manifest_free_fallback_enabled = true\n", encoding="utf-8")
         return policy
 
+    def payload_only_directory_sha256(self, root: Path) -> str:
+        digest = hashlib.sha256()
+        for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
+            if path.name.lower() in {"manifest.json", "manifest.toml", "provenance.json"}:
+                continue
+            digest.update(str(path.relative_to(root)).encode("utf-8"))
+            digest.update(sha256_file(path).encode("ascii"))
+        return digest.hexdigest()
+
     def test_forged_manifest_hash_fixture_blocks_promotion(self) -> None:
         fixture = ROOT / "data" / "hostile" / "forged_manifest_hash"
         copied = self.cwd / fixture.name
@@ -55,7 +66,7 @@ class WildernessHardeningTests(unittest.TestCase):
         self.assertEqual(artifact["status"], "discard")
         self.assertTrue(
             any(
-                finding["family"] == "provenance_gap" and "hash" in finding["message"]
+                finding["family"] == "provenance_gap" and "raw_sha256" in finding["message"]
                 for finding in artifact["findings"]
             )
         )
@@ -66,16 +77,17 @@ class WildernessHardeningTests(unittest.TestCase):
         shutil.copytree(fixture, copied)
 
         inspect, artifact = self.inspect_json(copied)
-        self.assertEqual(inspect.returncode, 0)
-        self.assertEqual(artifact["status"], "shelter")
+        self.assertEqual(inspect.returncode, 20)
+        self.assertEqual(artifact["status"], "discard")
         self.assertTrue(
             any(
-                finding["family"] == "provenance_gap" and "source name" in finding["message"]
+                finding["family"] == "provenance_gap" and "source_name" in finding["message"]
                 for finding in artifact["findings"]
             )
         )
         self.assertTrue(artifact["manifest"]["present"])
         self.assertFalse(artifact["manifest"]["fallback_applied"])
+        self.assertTrue(artifact["manifest"]["validated"])
 
     def test_wrong_type_manifest_is_invalid(self) -> None:
         manifest = ROOT / "data" / "hostile" / "wrong_type_manifest" / "manifest.json"
@@ -218,6 +230,165 @@ class WildernessHardeningTests(unittest.TestCase):
         result = self.run_cli("manifest-check", str(manifest))
         self.assertEqual(result.returncode, 0)
         self.assertIn("valid: True", result.stdout)
+
+    def test_manifest_schema_details_are_recorded_in_artifact(self) -> None:
+        fixture = ROOT / "data" / "benign" / "manifest_bundle"
+        copied = self.cwd / fixture.name
+        shutil.copytree(fixture, copied)
+
+        inspect, artifact = self.inspect_json(copied)
+        self.assertEqual(inspect.returncode, 0, inspect.stderr)
+        self.assertTrue(artifact["manifest"]["present"])
+        self.assertTrue(artifact["manifest"]["validated"])
+        self.assertEqual(artifact["manifest"]["schema_version"], 1)
+        self.assertEqual(
+            artifact["manifest"]["claims"],
+            {
+                "source_name": "manifest_bundle",
+                "raw_sha256": "7891035f289e6e2660818cb19d77b0a63f04d92345b393058c1a582c0c5b7fa5",
+                "raw_size_bytes": 216,
+                "source_kind": "directory",
+            },
+        )
+
+    def test_manifest_missing_required_fields_fails_manifest_check_and_inspect(self) -> None:
+        bundle = self.cwd / "bundle"
+        bundle.mkdir()
+        (bundle / "payload.txt").write_text("hello\n", encoding="utf-8")
+        (bundle / "manifest.json").write_text(
+            json.dumps({"schema_version": 1, "source_name": "bundle"}) + "\n",
+            encoding="utf-8",
+        )
+
+        check = self.run_cli("manifest-check", str(bundle))
+        self.assertEqual(check.returncode, 20)
+        self.assertIn("raw_sha256 must be a 64-character lowercase hex string", check.stdout)
+
+        inspect, artifact = self.inspect_json(bundle)
+        self.assertEqual(inspect.returncode, 20)
+        self.assertEqual(artifact["status"], "discard")
+        self.assertFalse(artifact["manifest"]["validated"])
+        self.assertTrue(
+            any(
+                finding["family"] == "schema_violation" and "raw_sha256" in finding["message"]
+                for finding in artifact["findings"]
+            )
+        )
+
+    def test_manifest_check_rejects_invalid_raw_sha256_format(self) -> None:
+        manifest = self.cwd / "manifest.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "source_name": "manifest.json",
+                    "raw_sha256": "deadbeef",
+                    "source_kind": "file",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_cli("manifest-check", str(manifest))
+        self.assertEqual(result.returncode, 20)
+        self.assertIn("raw_sha256 must be a 64-character lowercase hex string", result.stdout)
+
+    def test_multiple_supported_manifests_are_blocked(self) -> None:
+        bundle = self.cwd / "bundle"
+        bundle.mkdir()
+        (bundle / "payload.txt").write_text("hello\n", encoding="utf-8")
+        payload_sha256 = self.payload_only_directory_sha256(bundle)
+        manifest_payload = {
+            "schema_version": 1,
+            "source_name": "bundle",
+            "raw_sha256": payload_sha256,
+            "raw_size_bytes": 6,
+            "source_kind": "directory",
+        }
+        (bundle / "manifest.json").write_text(json.dumps(manifest_payload) + "\n", encoding="utf-8")
+        (bundle / "provenance.json").write_text(json.dumps(manifest_payload) + "\n", encoding="utf-8")
+
+        check = self.run_cli("manifest-check", str(bundle))
+        self.assertEqual(check.returncode, 20)
+        self.assertIn("multiple supported manifests found", check.stdout)
+
+        inspect, artifact = self.inspect_json(bundle)
+        self.assertEqual(inspect.returncode, 20)
+        self.assertFalse(artifact["manifest"]["validated"])
+        self.assertTrue(
+            any(
+                finding["family"] == "schema_violation" and "multiple supported manifests found" in finding["message"]
+                for finding in artifact["findings"]
+            )
+        )
+
+    def test_manifest_raw_size_mismatch_blocks_promotion(self) -> None:
+        bundle = self.cwd / "bundle"
+        bundle.mkdir()
+        payload = bundle / "payload.txt"
+        payload.write_text("hello\n", encoding="utf-8")
+        (bundle / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "source_name": "bundle",
+                    "raw_sha256": self.payload_only_directory_sha256(bundle),
+                    "raw_size_bytes": 999,
+                    "source_kind": "directory",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        inspect, artifact = self.inspect_json(bundle)
+        self.assertEqual(inspect.returncode, 20)
+        self.assertTrue(
+            any(
+                finding["family"] == "provenance_gap" and "raw_size_bytes" in finding["message"]
+                for finding in artifact["findings"]
+            )
+        )
+
+    def test_manifest_source_kind_mismatch_blocks_promotion(self) -> None:
+        bundle = self.cwd / "bundle"
+        bundle.mkdir()
+        (bundle / "payload.txt").write_text("hello\n", encoding="utf-8")
+        (bundle / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "source_name": "bundle",
+                    "raw_sha256": self.payload_only_directory_sha256(bundle),
+                    "raw_size_bytes": 6,
+                    "source_kind": "file",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        inspect, artifact = self.inspect_json(bundle)
+        self.assertEqual(inspect.returncode, 20)
+        self.assertTrue(
+            any(
+                finding["family"] == "provenance_gap" and "source_kind" in finding["message"]
+                for finding in artifact["findings"]
+            )
+        )
+
+    def test_invalid_manifest_does_not_fall_back_to_manifest_free_policy(self) -> None:
+        bundle = self.cwd / "bundle"
+        bundle.mkdir()
+        (bundle / "payload.txt").write_text("hello\n", encoding="utf-8")
+        (bundle / "manifest.json").write_text("{not json", encoding="utf-8")
+        policy = self.write_manifest_fallback_policy()
+
+        inspect, artifact = self.inspect_json(bundle, "--policy", str(policy))
+        self.assertEqual(inspect.returncode, 20)
+        self.assertFalse(artifact["promotion"]["eligible"])
+        self.assertFalse(artifact["manifest"]["fallback_applied"])
 
     def test_invalid_manifest_fallback_scope_fails_at_policy_load_time(self) -> None:
         sample = ROOT / "data" / "benign" / "sample.json"

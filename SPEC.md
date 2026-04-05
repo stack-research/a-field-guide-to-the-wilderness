@@ -288,6 +288,17 @@ The first fallback scope should stay narrow:
 - no directory or archive inputs
 - no nested archive behavior
 
+The supported manifest contract should be explicit:
+
+- exactly one supported manifest per inspected artifact
+- `schema_version = 1`
+- required fields: `source_name`, `raw_sha256`
+- optional fields: `raw_size_bytes`, `source_kind`
+
+Schema failures, malformed values, and multiple supported manifests should be blocking failures. A present but invalid manifest should not fall through to manifest-free fallback.
+
+When a manifest is embedded inside the inspected artifact, `raw_sha256` should describe the payload the manifest accompanies, excluding the manifest file itself to avoid a self-referential digest.
+
 Promotion should never happen implicitly because a parser "handled" the content.
 
 ## Redaction and Privacy
@@ -371,7 +382,7 @@ Expected policy controls:
 
 Policy should be local and inspectable. No cloud dependency.
 
-`manifest-check` should stay narrow. It validates supported manifests and their parseability, but it should not simulate manifest-free promotion fallback.
+`manifest-check` should stay narrow. It validates supported manifests against the explicit schema contract, but it should not simulate manifest-free promotion fallback.
 
 ## Architecture
 

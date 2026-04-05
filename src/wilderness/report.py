@@ -81,10 +81,16 @@ def render_report(report: dict) -> str:
             + ", ".join(safe_display(reason) for reason in report["promotion"]["blocking_reasons"])
         )
     if report.get("manifest"):
+        manifest = report["manifest"]
         blockers = report.get("promotion", {}).get("blocking_reasons", [])
         manifest_blocked = any("manifest" in reason for reason in blockers)
-        if manifest_blocked:
-            lines.append(f"manifest_present: {report['manifest']['present']}")
+        manifest_invalid = manifest.get("present") and not manifest.get("validated", False)
+        if manifest_blocked or manifest_invalid:
+            lines.append(f"manifest_present: {manifest['present']}")
+            if manifest.get("present"):
+                lines.append(f"manifest_validated: {manifest.get('validated', False)}")
+                if manifest.get("schema_version") is not None:
+                    lines.append(f"manifest_schema_version: {manifest['schema_version']}")
     if report.get("discard", {}).get("retained"):
         lines.append(f"discard_retained: {report['discard']['retained']}")
         lines.append(f"discard_path: {safe_display(report['discard']['path'])}")
