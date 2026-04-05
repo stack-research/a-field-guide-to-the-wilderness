@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import tomllib
 import unicodedata
@@ -30,7 +30,8 @@ SUPPORTED_MANIFEST_NAMES = {
     "manifest.toml",
     "provenance.json",
 }
-MANIFEST_SCHEMA_VERSION = 1
+PROMOTABLE_MANIFEST_SCHEMA_VERSION = 2
+SUPPORTED_MANIFEST_SCHEMA_VERSIONS = {1, PROMOTABLE_MANIFEST_SCHEMA_VERSION}
 _MANIFEST_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MANIFEST_SOURCE_KINDS = {"file", "directory"}
 _SUSPICIOUS_TEXT_FLAGS = re.IGNORECASE | re.MULTILINE | re.DOTALL
@@ -123,6 +124,7 @@ class ParsedManifest:
     schema_version: int | None
     claims: dict
     validated: bool
+    promotable: bool
     findings: tuple[dict, ...]
 
 
@@ -162,9 +164,9 @@ def _parse_manifest(path: Path, data: bytes) -> tuple[dict | None, dict | None]:
 
 def _parse_manifest_schema(path: Path, manifest: dict) -> ParsedManifest:
     findings: list[dict] = []
-    claims: dict[str, str | int] = {}
+    claims: dict[str, str | int | list[dict[str, str | int]]] = {}
     schema_version = manifest.get("schema_version")
-    if type(schema_version) is int and schema_version == MANIFEST_SCHEMA_VERSION:
+    if type(schema_version) is int and schema_version in SUPPORTED_MANIFEST_SCHEMA_VERSIONS:
         normalized_schema_version: int | None = schema_version
     else:
         normalized_schema_version = schema_version if type(schema_version) is int else None
@@ -172,7 +174,7 @@ def _parse_manifest_schema(path: Path, manifest: dict) -> ParsedManifest:
             _finding(
                 "schema_violation",
                 "severe",
-                f"schema_version must be {MANIFEST_SCHEMA_VERSION}",
+                "schema_version must be 1 or 2",
                 str(path),
             )
         )
@@ -226,13 +228,122 @@ def _parse_manifest_schema(path: Path, manifest: dict) -> ParsedManifest:
                 )
             )
 
+    if normalized_schema_version == PROMOTABLE_MANIFEST_SCHEMA_VERSION:
+        claims["files"] = _parse_manifest_files(path, manifest.get("files"), findings)
+
     return ParsedManifest(
         path=str(path),
         schema_version=normalized_schema_version,
         claims=claims,
         validated=not findings,
+        promotable=not findings and normalized_schema_version == PROMOTABLE_MANIFEST_SCHEMA_VERSION,
         findings=tuple(findings),
     )
+
+
+def _normalize_manifest_inventory_path(path_text: str) -> str | None:
+    if not isinstance(path_text, str) or not path_text.strip() or "\\" in path_text:
+        return None
+    candidate = PurePosixPath(path_text)
+    if candidate.is_absolute():
+        return None
+    if not candidate.parts:
+        return None
+    if any(part in {"", ".", ".."} for part in candidate.parts):
+        return None
+    normalized = PurePosixPath(*candidate.parts).as_posix()
+    if normalized != path_text:
+        return None
+    return normalized
+
+
+def _parse_manifest_files(
+    manifest_path: Path,
+    raw_files: object,
+    findings: list[dict],
+) -> list[dict[str, str | int]]:
+    if not isinstance(raw_files, list) or not raw_files:
+        findings.append(
+            _finding("schema_violation", "severe", "files must be a non-empty list", str(manifest_path))
+        )
+        return []
+
+    normalized_files: list[dict[str, str | int]] = []
+    seen_paths: set[str] = set()
+    for index, raw_file in enumerate(raw_files, start=1):
+        entry_context = f"{manifest_path} file entry {index}"
+        if not isinstance(raw_file, dict):
+            findings.append(
+                _finding("schema_violation", "severe", f"{entry_context} must be an object", str(manifest_path))
+            )
+            continue
+
+        normalized_path = _normalize_manifest_inventory_path(raw_file.get("path", ""))
+        if normalized_path is None:
+            findings.append(
+                _finding(
+                    "schema_violation",
+                    "severe",
+                    f"{entry_context} path must be a normalized relative path",
+                    str(manifest_path),
+                )
+            )
+            continue
+        if PurePosixPath(normalized_path).name.lower() in SUPPORTED_MANIFEST_NAMES:
+            findings.append(
+                _finding(
+                    "schema_violation",
+                    "severe",
+                    f"{entry_context} path must not reference a supported manifest file",
+                    str(manifest_path),
+                )
+            )
+            continue
+        if normalized_path in seen_paths:
+            findings.append(
+                _finding(
+                    "schema_violation",
+                    "severe",
+                    f"{entry_context} path must be unique",
+                    str(manifest_path),
+                )
+            )
+            continue
+        seen_paths.add(normalized_path)
+
+        sha256 = raw_file.get("sha256")
+        if not isinstance(sha256, str) or not _MANIFEST_SHA256_RE.fullmatch(sha256):
+            findings.append(
+                _finding(
+                    "schema_violation",
+                    "severe",
+                    f"{entry_context} sha256 must be a 64-character lowercase hex string",
+                    str(manifest_path),
+                )
+            )
+            continue
+
+        normalized_entry: dict[str, str | int] = {
+            "path": normalized_path,
+            "sha256": sha256,
+        }
+        if "size_bytes" in raw_file:
+            size_bytes = raw_file.get("size_bytes")
+            if type(size_bytes) is int and size_bytes > 0:
+                normalized_entry["size_bytes"] = size_bytes
+            else:
+                findings.append(
+                    _finding(
+                        "schema_violation",
+                        "severe",
+                        f"{entry_context} size_bytes must be a positive integer",
+                        str(manifest_path),
+                    )
+                )
+                continue
+
+        normalized_files.append(normalized_entry)
+    return normalized_files
 
 
 def _manifest_payload_sha256(root: Path) -> str:
@@ -244,6 +355,20 @@ def _manifest_payload_sha256(root: Path) -> str:
         digest.update(str(rel_path).encode("utf-8"))
         digest.update(sha256_file(path).encode("ascii"))
     return digest.hexdigest()
+
+
+def _payload_file_inventory(root: Path) -> dict[str, dict[str, str | int]]:
+    inventory: dict[str, dict[str, str | int]] = {}
+    for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
+        rel_path = path.relative_to(root)
+        if _is_supported_manifest(rel_path):
+            continue
+        inventory[str(rel_path)] = {
+            "path": str(rel_path),
+            "sha256": sha256_file(path),
+            "size_bytes": path.stat().st_size,
+        }
+    return inventory
 
 
 def _materialize_redacted_tree(
@@ -296,6 +421,69 @@ def _manifest_mismatch(
         findings.append(
             _finding("provenance_gap", "severe", "manifest source_kind does not match input kind", path)
         )
+    return findings
+
+
+def _manifest_inventory_mismatch(
+    claims: dict,
+    inventory: dict[str, dict[str, str | int]],
+    path: str,
+) -> list[dict]:
+    findings = []
+    claimed_files = claims.get("files")
+    if not isinstance(claimed_files, list):
+        return findings
+
+    claimed_by_path = {
+        str(entry["path"]): entry
+        for entry in claimed_files
+        if isinstance(entry, dict) and "path" in entry
+    }
+
+    missing_paths = sorted(set(inventory) - set(claimed_by_path))
+    for missing_path in missing_paths:
+        findings.append(
+            _finding(
+                "provenance_gap",
+                "severe",
+                f"manifest file inventory missing payload file {missing_path}",
+                path,
+            )
+        )
+
+    unexpected_paths = sorted(set(claimed_by_path) - set(inventory))
+    for unexpected_path in unexpected_paths:
+        findings.append(
+            _finding(
+                "provenance_gap",
+                "severe",
+                f"manifest file inventory references unexpected payload file {unexpected_path}",
+                path,
+            )
+        )
+
+    for rel_path in sorted(set(inventory) & set(claimed_by_path)):
+        claimed_entry = claimed_by_path[rel_path]
+        payload_entry = inventory[rel_path]
+        if claimed_entry.get("sha256") != payload_entry["sha256"]:
+            findings.append(
+                _finding(
+                    "provenance_gap",
+                    "severe",
+                    f"manifest file inventory sha256 does not match payload file {rel_path}",
+                    path,
+                )
+            )
+        claimed_size = claimed_entry.get("size_bytes")
+        if claimed_size is not None and claimed_size != payload_entry["size_bytes"]:
+            findings.append(
+                _finding(
+                    "provenance_gap",
+                    "severe",
+                    f"manifest file inventory size_bytes does not match payload file {rel_path}",
+                    path,
+                )
+            )
     return findings
 
 
@@ -669,6 +857,7 @@ def inspect_bundle(
     manifest_findings = []
     redaction_applied = False
     redacted_files: dict[Path, bytes] = {}
+    payload_inventory = _payload_file_inventory(unpacked.normalized_output_path)
 
     for path in sorted(candidate for candidate in unpacked.normalized_output_path.rglob("*") if candidate.is_file()):
         rel_path = path.relative_to(unpacked.normalized_output_path)
@@ -744,8 +933,9 @@ def inspect_bundle(
 
     manifest_present = bool(manifest_paths)
     manifest_validated = False
+    manifest_promotable = False
     manifest_schema_version: int | None = None
-    manifest_claims: dict[str, str | int] = {}
+    manifest_claims: dict[str, str | int | list[dict[str, str | int]]] = {}
 
     if len(manifest_paths) > 1:
         manifest_findings.append(
@@ -761,18 +951,29 @@ def inspect_bundle(
         manifest_schema_version = parsed_manifest.schema_version
         manifest_claims = parsed_manifest.claims
         manifest_validated = parsed_manifest.validated
+        manifest_promotable = parsed_manifest.promotable
         manifest_findings.extend(parsed_manifest.findings)
         if parsed_manifest.validated:
-            findings.extend(
-                _manifest_mismatch(
+            manifest_provenance_findings = _manifest_mismatch(
+                parsed_manifest.claims,
+                _manifest_payload_sha256(unpacked.normalized_output_path),
+                intake.provenance["raw_size_bytes"],
+                intake.source_path.name,
+                intake.provenance["input"]["source_kind"],
+                parsed_manifest.path,
+            )
+            findings.extend(manifest_provenance_findings)
+            if manifest_provenance_findings:
+                manifest_promotable = False
+            if parsed_manifest.schema_version == PROMOTABLE_MANIFEST_SCHEMA_VERSION:
+                manifest_inventory_findings = _manifest_inventory_mismatch(
                     parsed_manifest.claims,
-                    _manifest_payload_sha256(unpacked.normalized_output_path),
-                    intake.provenance["raw_size_bytes"],
-                    intake.source_path.name,
-                    intake.provenance["input"]["source_kind"],
+                    payload_inventory,
                     parsed_manifest.path,
                 )
-            )
+                findings.extend(manifest_inventory_findings)
+                if manifest_inventory_findings:
+                    manifest_promotable = False
 
     findings.extend(manifest_findings)
 
@@ -808,6 +1009,13 @@ def inspect_bundle(
             else:
                 fallback_reason = "manifest-free fallback not allowed for this artifact type"
             promotion_reasons.append(fallback_reason)
+    elif (
+        manifest_present
+        and policy.manifest_required_for_promotion
+        and manifest_validated
+        and manifest_schema_version != PROMOTABLE_MANIFEST_SCHEMA_VERSION
+    ):
+        promotion_reasons.append("manifest schema_version 2 required for promotion")
     if policy.redaction_required and not redaction_applied:
         promotion_reasons.append("redaction required by policy but no changes were applied")
 
@@ -872,6 +1080,7 @@ def inspect_bundle(
             "fallback_applied": fallback_applied,
             "fallback_scope": policy.manifest_free_fallback_scope,
             "validated": manifest_validated,
+            "promotable": manifest_promotable,
             "schema_version": manifest_schema_version,
             "claims": manifest_claims,
         },
@@ -967,9 +1176,17 @@ def manifest_check(path: str) -> dict:
             )
         )
 
+    valid = bool(manifests) and len(manifests) == 1 and not manifest_errors and len(parsed_manifests) == 1
+    promotable = valid and parsed_manifests[0].promotable
+    promotion_note = None
+    if valid and not promotable and parsed_manifests[0].schema_version == 1:
+        promotion_note = "schema_version 2 required for promotion"
+
     return {
         "input": str(source),
         "manifests": manifests,
-        "valid": bool(manifests) and len(manifests) == 1 and not manifest_errors and len(parsed_manifests) == 1,
+        "valid": valid,
+        "promotable": promotable,
+        "promotion_note": promotion_note,
         "errors": manifest_errors,
     }

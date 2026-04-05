@@ -1,7 +1,13 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "source_name": "someone-else",
   "raw_sha256": "d98d79802d50e9142ca001110a30d3fbe9b45e1be973e4113b056d6e5f43781c",
-  "raw_size_bytes": 213,
-  "source_kind": "directory"
+  "source_kind": "directory",
+  "files": [
+    {
+      "path": "payload.txt",
+      "sha256": "631d42d6189c2614dd7f3802b9c87936f91a948f834fd92c5428bbeecc99580a",
+      "size_bytes": 15
+    }
+  ]
 }

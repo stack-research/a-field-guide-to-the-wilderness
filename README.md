@@ -49,7 +49,7 @@ When policy enables forensic retention for blocked artifacts, `inspect` also cop
 
 Inspection artifacts now also carry a top-level `suspicious_text` section with normalization metadata, built-in rule counts, loaded pack provenance, and any local suspicious-text promotion-gating policy.
 
-Inspection artifacts also carry a top-level `manifest` section with manifest presence, discovered paths, schema validation status, normalized claims, and any manifest-free fallback decision used for promotion gating.
+Inspection artifacts also carry a top-level `manifest` section with manifest presence, discovered paths, schema validation status, normalized claims, promotability, and any manifest-free fallback decision used for promotion gating.
 
 Inspection artifacts now also carry a top-level `redaction` section with whether redaction was enabled, required, applied, and materialized as a parallel derivative.
 
@@ -63,20 +63,34 @@ When redaction is enabled and actually changes content, `inspect` now materializ
 
 By default, promotion requires a supported manifest. A local policy may allow a narrow manifest-free fallback for a single text or JSON file that otherwise passes structural checks. Directories and archives remain outside that fallback scope.
 
-Supported manifests now use an explicit v1 schema. Required fields are:
+Supported manifests now accept a compatibility v1 schema for tooling and a promotable v2 schema for inspection-backed promotion.
 
-- `schema_version = 1`
+Schema v2 required fields are:
+
+- `schema_version = 2`
 - `source_name`
 - `raw_sha256`
+- `files`
 
 Optional fields are:
 
 - `raw_size_bytes`
 - `source_kind`
 
-Only one supported manifest may appear in an inspected artifact. Parse failures, missing required fields, invalid hash format, unknown schema versions, or multiple supported manifests block promotion.
+Each `files` entry must include:
 
-For embedded manifests, `raw_sha256` is checked against the bundle payload the manifest describes, excluding the manifest file itself so the digest is not self-referential.
+- `path`
+- `sha256`
+
+and may also include:
+
+- `size_bytes`
+
+Only one supported manifest may appear in an inspected artifact. Parse failures, missing required fields, invalid hash format, unknown schema versions, malformed file inventories, or multiple supported manifests block promotion.
+
+Schema v1 manifests remain parseable in `manifest-check`, but they no longer satisfy `manifest_required_for_promotion`.
+
+For embedded manifests, `raw_sha256` is checked against the bundle payload the manifest describes, excluding supported manifest files so the digest is not self-referential. Schema v2 file inventories are checked against that same non-manifest payload set.
 
 `wilderness verify` is the downstream gate. It exits `0` only when a report is still promotable or already promoted. `--require-promoted` insists on a live `safe_camp` copy.
 
@@ -85,6 +99,8 @@ When a bundle has already been promoted, `verify --require-promoted` now checks 
 `wilderness source` resolves the exact downstream-ready tree the system would use. By default it prefers a live promoted `safe_camp` copy when one exists, otherwise it falls back to the effective report-derived source: required redacted derivative first, normalized shelter output otherwise. `--mode` can force `promoted`, `redacted`, or `shelter`, `--json` makes the result machine-readable, and `--out` copies the resolved tree to a chosen destination.
 
 `wilderness source` only prefers promoted output when the promoted safe-camp copy still matches its attestation. A drifted promoted tree blocks resolution instead of silently falling back to shelter or redacted state.
+
+`wilderness manifest-check` now reports both structural validity and promotability. A valid v1 manifest returns `valid: True` and `promotable: False`; a valid v2 manifest returns both `True`.
 
 Suspicious-text findings are advisory by default. A local policy may also turn all suspicious-text findings, or selected suspicious-text `rule_id` values, into promotion blockers without changing the detector itself.
 

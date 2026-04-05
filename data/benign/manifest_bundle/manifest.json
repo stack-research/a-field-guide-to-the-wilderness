@@ -1,7 +1,13 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "source_name": "manifest_bundle",
   "raw_sha256": "7891035f289e6e2660818cb19d77b0a63f04d92345b393058c1a582c0c5b7fa5",
-  "raw_size_bytes": 216,
-  "source_kind": "directory"
+  "source_kind": "directory",
+  "files": [
+    {
+      "path": "notes.txt",
+      "sha256": "351a9ad80b2d2208b394aa7f8ea6c25d5cee32b70fa1446673fab79586fdfd0a",
+      "size_bytes": 15
+    }
+  ]
 }

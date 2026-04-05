@@ -293,13 +293,23 @@ The first fallback scope should stay narrow:
 The supported manifest contract should be explicit:
 
 - exactly one supported manifest per inspected artifact
-- `schema_version = 1`
+- schema v1 may remain parseable for tooling compatibility
+- `schema_version = 2` is the promotable manifest version
 - required fields: `source_name`, `raw_sha256`
+- required field for v2: `files`
 - optional fields: `raw_size_bytes`, `source_kind`
+
+For schema v2, `files` must be a complete inventory of every non-manifest payload file in the normalized bundle. Each entry should include:
+
+- `path`
+- `sha256`
+- optional `size_bytes`
 
 Schema failures, malformed values, and multiple supported manifests should be blocking failures. A present but invalid manifest should not fall through to manifest-free fallback.
 
-When a manifest is embedded inside the inspected artifact, `raw_sha256` should describe the payload the manifest accompanies, excluding the manifest file itself to avoid a self-referential digest.
+When a manifest is embedded inside the inspected artifact, `raw_sha256` should describe the payload the manifest accompanies, excluding supported manifest files to avoid a self-referential digest. Schema v2 file inventories should be compared against that same non-manifest payload set.
+
+Schema v1 manifests may still be reported as structurally valid by manifest-focused tooling, but they should no longer satisfy promotion requirements.
 
 Promotion should never happen implicitly because a parser "handled" the content.
 
@@ -413,7 +423,7 @@ Policy should be local and inspectable. No cloud dependency.
 
 Suspicious-text policy should support both an opt-in block-all mode and a list of blocking `rule_id` values. Blocking suspicious-text findings should affect promotion eligibility and downstream verification, but should not reclassify artifacts as `discard` on their own.
 
-`manifest-check` should stay narrow. It validates supported manifests against the explicit schema contract, but it should not simulate manifest-free promotion fallback.
+`manifest-check` should stay narrow. It validates supported manifests against the explicit schema contract, but it should not simulate manifest-free promotion fallback. It may report both structural validity and whether the manifest satisfies the promotable schema version.
 
 ## Architecture
 

@@ -279,6 +279,15 @@ class WildernessHardeningTests(unittest.TestCase):
         result = self.run_cli("manifest-check", str(manifest))
         self.assertEqual(result.returncode, 0)
         self.assertIn("valid: True", result.stdout)
+        self.assertIn("promotable: False", result.stdout)
+        self.assertIn("schema_version 2 required for promotion", result.stdout)
+
+    def test_manifest_check_accepts_v2_manifest_as_promotable(self) -> None:
+        manifest = ROOT / "data" / "benign" / "manifest_bundle" / "manifest.json"
+        result = self.run_cli("manifest-check", str(manifest))
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("valid: True", result.stdout)
+        self.assertIn("promotable: True", result.stdout)
 
     def test_manifest_schema_details_are_recorded_in_artifact(self) -> None:
         fixture = ROOT / "data" / "benign" / "manifest_bundle"
@@ -289,14 +298,21 @@ class WildernessHardeningTests(unittest.TestCase):
         self.assertEqual(inspect.returncode, 0, inspect.stderr)
         self.assertTrue(artifact["manifest"]["present"])
         self.assertTrue(artifact["manifest"]["validated"])
-        self.assertEqual(artifact["manifest"]["schema_version"], 1)
+        self.assertTrue(artifact["manifest"]["promotable"])
+        self.assertEqual(artifact["manifest"]["schema_version"], 2)
         self.assertEqual(
             artifact["manifest"]["claims"],
             {
                 "source_name": "manifest_bundle",
                 "raw_sha256": "7891035f289e6e2660818cb19d77b0a63f04d92345b393058c1a582c0c5b7fa5",
-                "raw_size_bytes": 216,
                 "source_kind": "directory",
+                "files": [
+                    {
+                        "path": "notes.txt",
+                        "sha256": "351a9ad80b2d2208b394aa7f8ea6c25d5cee32b70fa1446673fab79586fdfd0a",
+                        "size_bytes": 15,
+                    }
+                ],
             },
         )
 
@@ -305,7 +321,7 @@ class WildernessHardeningTests(unittest.TestCase):
         bundle.mkdir()
         (bundle / "payload.txt").write_text("hello\n", encoding="utf-8")
         (bundle / "manifest.json").write_text(
-            json.dumps({"schema_version": 1, "source_name": "bundle"}) + "\n",
+            json.dumps({"schema_version": 2, "source_name": "bundle"}) + "\n",
             encoding="utf-8",
         )
 
@@ -329,10 +345,16 @@ class WildernessHardeningTests(unittest.TestCase):
         manifest.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "source_name": "manifest.json",
                     "raw_sha256": "deadbeef",
                     "source_kind": "file",
+                    "files": [
+                        {
+                            "path": "payload.txt",
+                            "sha256": "631d42d6189c2614dd7f3802b9c87936f91a948f834fd92c5428bbeecc99580a",
+                        }
+                    ],
                 }
             )
             + "\n",
@@ -349,11 +371,17 @@ class WildernessHardeningTests(unittest.TestCase):
         (bundle / "payload.txt").write_text("hello\n", encoding="utf-8")
         payload_sha256 = self.payload_only_directory_sha256(bundle)
         manifest_payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "source_name": "bundle",
             "raw_sha256": payload_sha256,
-            "raw_size_bytes": 6,
             "source_kind": "directory",
+            "files": [
+                {
+                    "path": "payload.txt",
+                    "sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2fc60eb2df4",
+                    "size_bytes": 6,
+                }
+            ],
         }
         (bundle / "manifest.json").write_text(json.dumps(manifest_payload) + "\n", encoding="utf-8")
         (bundle / "provenance.json").write_text(json.dumps(manifest_payload) + "\n", encoding="utf-8")
@@ -380,11 +408,18 @@ class WildernessHardeningTests(unittest.TestCase):
         (bundle / "manifest.json").write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "source_name": "bundle",
                     "raw_sha256": self.payload_only_directory_sha256(bundle),
                     "raw_size_bytes": 999,
                     "source_kind": "directory",
+                    "files": [
+                        {
+                            "path": "payload.txt",
+                            "sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2fc60eb2df4",
+                            "size_bytes": 6,
+                        }
+                    ],
                 }
             )
             + "\n",
@@ -407,11 +442,17 @@ class WildernessHardeningTests(unittest.TestCase):
         (bundle / "manifest.json").write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "source_name": "bundle",
                     "raw_sha256": self.payload_only_directory_sha256(bundle),
-                    "raw_size_bytes": 6,
                     "source_kind": "file",
+                    "files": [
+                        {
+                            "path": "payload.txt",
+                            "sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2fc60eb2df4",
+                            "size_bytes": 6,
+                        }
+                    ],
                 }
             )
             + "\n",
@@ -459,6 +500,172 @@ class WildernessHardeningTests(unittest.TestCase):
         self.assertEqual(result.returncode, 20)
         self.assertIn("policy error:", result.stderr)
         self.assertIn("manifest_free_fallback_scope", result.stderr)
+
+    def test_v1_manifest_is_valid_but_no_longer_promotable(self) -> None:
+        bundle = self.cwd / "bundle"
+        bundle.mkdir()
+        (bundle / "payload.txt").write_text("hello\n", encoding="utf-8")
+        (bundle / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "source_name": "bundle",
+                    "raw_sha256": self.payload_only_directory_sha256(bundle),
+                    "source_kind": "directory",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        check = self.run_cli("manifest-check", str(bundle))
+        self.assertEqual(check.returncode, 0)
+        self.assertIn("valid: True", check.stdout)
+        self.assertIn("promotable: False", check.stdout)
+
+        inspect, artifact = self.inspect_json(bundle)
+        self.assertEqual(inspect.returncode, 10)
+        self.assertEqual(artifact["status"], "shelter")
+        self.assertFalse(artifact["promotion"]["eligible"])
+        self.assertIn("manifest schema_version 2 required for promotion", artifact["promotion"]["blocking_reasons"])
+
+    def test_v2_manifest_missing_files_fails_manifest_check_and_inspect(self) -> None:
+        bundle = self.cwd / "bundle"
+        bundle.mkdir()
+        (bundle / "payload.txt").write_text("hello\n", encoding="utf-8")
+        (bundle / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "source_name": "bundle",
+                    "raw_sha256": self.payload_only_directory_sha256(bundle),
+                    "source_kind": "directory",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        check = self.run_cli("manifest-check", str(bundle))
+        self.assertEqual(check.returncode, 20)
+        self.assertIn("files must be a non-empty list", check.stdout)
+
+        inspect, artifact = self.inspect_json(bundle)
+        self.assertEqual(inspect.returncode, 20)
+        self.assertTrue(
+            any(
+                finding["family"] == "schema_violation" and "files must be a non-empty list" in finding["message"]
+                for finding in artifact["findings"]
+            )
+        )
+
+    def test_v2_manifest_partial_inventory_blocks_promotion(self) -> None:
+        bundle = self.cwd / "bundle"
+        bundle.mkdir()
+        (bundle / "first.txt").write_text("one\n", encoding="utf-8")
+        (bundle / "second.txt").write_text("two\n", encoding="utf-8")
+        (bundle / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "source_name": "bundle",
+                    "raw_sha256": self.payload_only_directory_sha256(bundle),
+                    "source_kind": "directory",
+                    "files": [
+                        {
+                            "path": "first.txt",
+                            "sha256": sha256_file(bundle / "first.txt"),
+                            "size_bytes": 4,
+                        }
+                    ],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        inspect, artifact = self.inspect_json(bundle)
+        self.assertEqual(inspect.returncode, 20)
+        self.assertTrue(
+            any(
+                finding["family"] == "provenance_gap"
+                and "missing payload file second.txt" in finding["message"]
+                for finding in artifact["findings"]
+            )
+        )
+
+    def test_v2_manifest_unexpected_inventory_entry_blocks_promotion(self) -> None:
+        bundle = self.cwd / "bundle"
+        bundle.mkdir()
+        (bundle / "payload.txt").write_text("hello\n", encoding="utf-8")
+        (bundle / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "source_name": "bundle",
+                    "raw_sha256": self.payload_only_directory_sha256(bundle),
+                    "source_kind": "directory",
+                    "files": [
+                        {
+                            "path": "payload.txt",
+                            "sha256": sha256_file(bundle / "payload.txt"),
+                            "size_bytes": 6,
+                        },
+                        {
+                            "path": "missing.txt",
+                            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                            "size_bytes": 1,
+                        },
+                    ],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        inspect, artifact = self.inspect_json(bundle)
+        self.assertEqual(inspect.returncode, 20)
+        self.assertTrue(
+            any(
+                finding["family"] == "provenance_gap"
+                and "unexpected payload file missing.txt" in finding["message"]
+                for finding in artifact["findings"]
+            )
+        )
+
+    def test_v2_manifest_wrong_file_hash_blocks_promotion(self) -> None:
+        bundle = self.cwd / "bundle"
+        bundle.mkdir()
+        (bundle / "payload.txt").write_text("hello\n", encoding="utf-8")
+        (bundle / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "source_name": "bundle",
+                    "raw_sha256": self.payload_only_directory_sha256(bundle),
+                    "source_kind": "directory",
+                    "files": [
+                        {
+                            "path": "payload.txt",
+                            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+                            "size_bytes": 6,
+                        }
+                    ],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        inspect, artifact = self.inspect_json(bundle)
+        self.assertEqual(inspect.returncode, 20)
+        self.assertTrue(
+            any(
+                finding["family"] == "provenance_gap"
+                and "sha256 does not match payload file payload.txt" in finding["message"]
+                for finding in artifact["findings"]
+            )
+        )
 
     def test_report_snapshot_benign_bundle(self) -> None:
         artifact = self._artifact_for_snapshot(ROOT / "data" / "benign" / "manifest_bundle", "benign-bundle")

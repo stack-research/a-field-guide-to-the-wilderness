@@ -605,6 +605,9 @@ def cmd_manifest_check(args: argparse.Namespace) -> int:
     result = manifest_check(args.input)
     print(f"input: {result['input']}")
     print(f"valid: {result['valid']}")
+    print(f"promotable: {result['promotable']}")
+    if result.get("promotion_note"):
+        print(f"promotion_note: {result['promotion_note']}")
     if result["manifests"]:
         print("manifests:")
         for manifest in result["manifests"]:

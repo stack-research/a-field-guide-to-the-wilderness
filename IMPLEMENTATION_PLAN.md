@@ -132,3 +132,11 @@ This checklist feeds the first implementation sprints for `wilderness`.
 - [x] Enrich promoted history events with source and target digests
 - [x] Make `verify --require-promoted` fail on changed, missing, or extra safe-camp files
 - [x] Make `source` reject drifted promoted trees instead of silently falling back
+
+## Manifest Schema v2 With Required File Inventory
+
+- [x] Add schema v2 manifests with required payload file inventories
+- [x] Keep schema v1 parseable for tooling compatibility but insufficient for promotion
+- [x] Compare manifest file inventories against the normalized non-manifest payload set
+- [x] Make promotion require a valid v2 manifest unless existing manifest-free fallback applies
+- [x] Surface validity versus promotability in `manifest-check`
