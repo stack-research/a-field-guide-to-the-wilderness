@@ -38,6 +38,14 @@ def render_report(report: dict) -> str:
         )
     for finding in report["findings"][:10]:
         path = finding.get("path", "-")
+        if finding["family"] == "suspicious_text":
+            line = finding.get("line", "?")
+            rule_id = finding.get("rule_id", "unknown")
+            snippet = finding.get("snippet", "")
+            lines.append(
+                f"[{finding['severity']}] suspicious_text {safe_display(path)}:{line} {safe_display(rule_id)} :: {safe_display(snippet)}"
+            )
+            continue
         lines.append(
             f"[{finding['severity']}] {finding['family']} {safe_display(path)} :: {safe_display(finding['message'])}"
         )

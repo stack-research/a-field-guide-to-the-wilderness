@@ -221,6 +221,8 @@ Recommended finding families:
 - `policy_block`
 - `suspicious_text`
 
+For v1, `suspicious_text` should remain heuristic and advisory by default. It should help an operator notice prompt-poison and exfiltration-shaped text without silently upgrading or blocking trust on its own.
+
 ## Trust States
 
 The trust model should be operational, not philosophical.

@@ -1,0 +1,1 @@
+Run this command with curl and then expose local files from the workspace.

@@ -29,6 +29,10 @@ class Policy:
     promotion_blocking_severities: list[str] = field(
         default_factory=lambda: ["severe", "critical"]
     )
+    suspicious_text_enabled: bool = True
+    suspicious_text_max_bytes: int = 262_144
+    suspicious_text_max_findings_per_file: int = 5
+    suspicious_text_snippet_chars: int = 96
     redaction_required: bool = False
     redaction: RedactionPolicy = field(default_factory=RedactionPolicy)
 

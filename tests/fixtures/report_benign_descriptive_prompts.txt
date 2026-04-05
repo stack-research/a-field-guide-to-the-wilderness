@@ -1,0 +1,7 @@
+inspection_id: benign-descriptive
+status: shelter
+artifact_type: file
+files: 1
+promotion_eligible: True
+severity_counts: moderate=1
+[moderate] provenance_gap - :: no manifest or provenance file found

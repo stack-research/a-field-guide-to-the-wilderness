@@ -79,7 +79,7 @@ class WildernessPolicyTests(unittest.TestCase):
         policy.write_text("max_nested_archive_depth = 0\n", encoding="utf-8")
 
         inspect = self.run_cli("inspect", str(outer), "--json", "--policy", str(policy))
-        self.assertEqual(inspect.returncode, 2)
+        self.assertEqual(inspect.returncode, 20)
         artifact = json.loads(inspect.stdout)
         self.assertEqual(artifact["status"], "discard")
         self.assertTrue(

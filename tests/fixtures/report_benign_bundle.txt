@@ -1,0 +1,6 @@
+inspection_id: benign-bundle
+status: shelter
+artifact_type: directory
+files: 2
+promotion_eligible: True
+severity_counts: none

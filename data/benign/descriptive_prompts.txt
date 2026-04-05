@@ -1,0 +1,2 @@
+This note describes how systems use prompts and developer messages in general.
+It explains why hidden instructions matter, but it does not ask the reader to reveal, ignore, execute, print, upload, or expose anything.

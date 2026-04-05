@@ -1,0 +1,2 @@
+token=abc123
+path=/Users/tester/field-guide/private.txt

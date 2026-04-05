@@ -11,9 +11,21 @@ from wilderness.report import load_report, render_report, write_report
 from wilderness.common import sha256_directory
 from wilderness.unpack import build_shelter
 
+EXIT_OK = 0
+EXIT_REVIEW = 10
+EXIT_BLOCKED = 20
+
 
 def _report_path(state_root: Path, inspection_id: str) -> Path:
     return state_root / "reports" / f"{inspection_id}.json"
+
+
+def _inspect_exit_code(artifact: dict) -> int:
+    if artifact["status"] == "discard":
+        return EXIT_BLOCKED
+    if artifact["promotion"]["eligible"]:
+        return EXIT_OK
+    return EXIT_REVIEW
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
@@ -27,13 +39,13 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     else:
         print(render_report(artifact))
         print(f"report_path: {report_path}")
-    return 0 if artifact["status"] != "discard" else 2
+    return _inspect_exit_code(artifact)
 
 
 def cmd_report(args: argparse.Namespace) -> int:
     artifact = load_report(args.report)
     print(render_report(artifact))
-    return 0
+    return EXIT_OK
 
 
 def cmd_promote(args: argparse.Namespace) -> int:
@@ -41,15 +53,15 @@ def cmd_promote(args: argparse.Namespace) -> int:
     policy = load_policy(args.policy)
     if not artifact["promotion"]["eligible"]:
         print("promotion blocked: " + ", ".join(artifact["promotion"]["blocking_reasons"]))
-        return 2
+        return EXIT_BLOCKED
     normalized_path = Path(artifact["provenance"]["normalized_path"])
     if not normalized_path.exists():
         print("promotion blocked: normalized shelter output is missing")
-        return 2
+        return EXIT_BLOCKED
     current_digest = sha256_directory(normalized_path)
     if current_digest != artifact["provenance"]["normalized_sha256"]:
         print("promotion blocked: inspection artifact is stale or shelter contents changed")
-        return 2
+        return EXIT_BLOCKED
 
     target = Path(policy.state_root) / "safe-camp" / artifact["inspection_id"]
     if target.exists():
@@ -59,7 +71,7 @@ def cmd_promote(args: argparse.Namespace) -> int:
     artifact["promotion"]["target_path"] = str(target.resolve())
     write_report(artifact, Path(args.report))
     print(f"promoted_to: {target}")
-    return 0
+    return EXIT_OK
 
 
 def cmd_manifest_check(args: argparse.Namespace) -> int:
@@ -75,7 +87,7 @@ def cmd_manifest_check(args: argparse.Namespace) -> int:
         for error in result["errors"]:
             path = error.get("path", "-")
             print(f"  - [{error['severity']}] {path}: {error['message']}")
-    return 0 if result["valid"] else 2
+    return EXIT_OK if result["valid"] else EXIT_BLOCKED
 
 
 def build_parser() -> argparse.ArgumentParser:

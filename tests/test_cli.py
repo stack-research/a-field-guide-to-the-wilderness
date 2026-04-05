@@ -57,7 +57,7 @@ class WildernessCliTests(unittest.TestCase):
             archive.writestr("ok.txt", "still here")
 
         inspect = self.run_cli("inspect", str(bundle), "--json")
-        self.assertEqual(inspect.returncode, 2)
+        self.assertEqual(inspect.returncode, 20)
         artifact = json.loads(inspect.stdout)
         families = {finding["family"] for finding in artifact["findings"]}
         self.assertIn("archive_escape", families)
@@ -77,7 +77,7 @@ class WildernessCliTests(unittest.TestCase):
         manifest = self.cwd / "manifest.json"
         manifest.write_text("{not json", encoding="utf-8")
         result = self.run_cli("manifest-check", str(manifest))
-        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.returncode, 20)
         self.assertIn("valid: False", result.stdout)
 
 

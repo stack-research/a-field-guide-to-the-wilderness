@@ -4,8 +4,8 @@ This checklist feeds the first implementation sprints for `wilderness`.
 
 ## Docs And Operating Contract
 
-- [x] Draft [AGENTS.md](/Users/macos-user/.projects/stack-research/a-field-guide-to-the-wilderness/AGENTS.md)
-- [x] Draft [README.md](/Users/macos-user/.projects/stack-research/a-field-guide-to-the-wilderness/README.md)
+- [x] Draft [AGENTS.md](AGENTS.md)
+- [x] Draft [README.md](README.md)
 - [x] Lock `wilderness` as the working CLI name
 - [x] Add a maintenance rule to keep docs aligned with CLI, policy, and report changes
 
@@ -43,13 +43,13 @@ This checklist feeds the first implementation sprints for `wilderness`.
 - [x] Add `data/benign/`
 - [x] Add `data/hostile/`
 - [x] Cover traversal blocking, control-sequence handling, promotion gating, and benign promotion
-- [ ] Expand the hostile corpus with more forged provenance, decompression edge cases, and duplicate-name collisions
-- [ ] Add XML-specific malformed fixture coverage
-- [ ] Add redaction-focused fixture coverage beyond inline synthetic test data
+- [x] Expand the hostile corpus with more forged provenance, decompression edge cases, and duplicate-name collisions
+- [x] Add XML-specific malformed fixture coverage
+- [x] Add redaction-focused fixture coverage beyond inline synthetic test data
 
 ## Next Sprints
 
-- [ ] Tighten suspicious-text heuristics after the structural boundary is stable
-- [ ] Add richer manifest policy and provenance schema validation
-- [ ] Add shell-friendly exit codes for blocked and promotable states
-- [ ] Add snapshot tests for the human report output
+- [x] Tighten suspicious-text heuristics after the structural boundary is stable
+- [x] Add richer manifest policy and provenance schema validation
+- [x] Add shell-friendly exit codes for blocked and promotable states
+- [x] Add snapshot tests for the human report output

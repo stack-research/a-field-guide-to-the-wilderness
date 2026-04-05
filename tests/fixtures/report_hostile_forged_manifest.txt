@@ -1,0 +1,8 @@
+inspection_id: hostile-forged
+status: discard
+artifact_type: directory
+files: 2
+promotion_eligible: False
+severity_counts: severe=1
+promotion_blockers: blocking findings present
+[severe] provenance_gap manifest.json :: manifest hash does not match quarantined input

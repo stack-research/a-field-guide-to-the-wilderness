@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import tomllib
 import xml.etree.ElementTree as ET
 
@@ -20,24 +21,82 @@ from wilderness.policy import Policy
 from wilderness.redact import redact_bytes
 from wilderness.unpack import UnpackResult
 
+SUPPORTED_MANIFEST_NAMES = {
+    "manifest.json",
+    "manifest.toml",
+    "provenance.json",
+}
+SUSPICIOUS_TEXT_RULES = (
+    (
+        "ignore_prior_instructions",
+        re.compile(
+            r"\b(ignore previous instructions|ignore prior instructions|disregard earlier instructions)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "system_prompt_reference",
+        re.compile(
+            r"(\b(reveal|show|print|dump|expose)\b.{0,40}\b(system prompt|developer message|hidden instructions|prompt)\b|\b(system prompt|developer message|hidden instructions)\b.{0,40}\b(reveal|show|print|dump|expose)\b)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "tool_execution_request",
+        re.compile(
+            r"(\brun this command\b|\bexecute (this|the|following)? ?command\b|\b(run|execute|use)\b.{0,32}\b(curl|wget|powershell)\b|\b(curl|wget|powershell)\b.{0,32}\b(run|execute|use)\b)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "credential_request",
+        re.compile(
+            r"\b(print|reveal|show|dump|share|send|expose)\b.{0,48}\b(token|api key|password|secret|credential)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "data_exfiltration_request",
+        re.compile(
+            r"\b(upload|send|print|dump|expose|share)\b.{0,64}\b(local files?|environment variables?|env vars?|secrets?)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
 
-def _finding(family: str, severity: str, message: str, path: str | None = None) -> dict:
+
+def _finding(
+    family: str,
+    severity: str,
+    message: str,
+    path: str | None = None,
+    **extra: str | int,
+) -> dict:
     finding = {"family": family, "severity": severity, "message": message}
     if path is not None:
         finding["path"] = path
+    finding.update(extra)
     return finding
+
+
+def _is_supported_manifest(path: Path) -> bool:
+    return path.name.lower() in SUPPORTED_MANIFEST_NAMES
 
 
 def _parse_manifest(path: Path, data: bytes) -> tuple[dict | None, dict | None]:
     lower_name = path.name.lower()
     try:
-        if lower_name.endswith(".json"):
-            return json.loads(data.decode("utf-8")), None
-        if lower_name.endswith(".toml"):
-            return tomllib.loads(data.decode("utf-8")), None
+        if lower_name in {"manifest.json", "provenance.json"}:
+            manifest = json.loads(data.decode("utf-8"))
+        elif lower_name == "manifest.toml":
+            manifest = tomllib.loads(data.decode("utf-8"))
+        else:
+            return None, _finding("schema_violation", "moderate", "manifest format unsupported", str(path))
     except (json.JSONDecodeError, tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
         return None, _finding("schema_violation", "severe", f"manifest parse failed: {error}", str(path))
-    return None, None
+    if not isinstance(manifest, dict):
+        return None, _finding("schema_violation", "severe", "manifest top level must be an object", str(path))
+    return manifest, None
 
 
 def _manifest_mismatch(manifest: dict, raw_sha256: str, source_name: str, path: Path) -> list[dict]:
@@ -52,6 +111,45 @@ def _manifest_mismatch(manifest: dict, raw_sha256: str, source_name: str, path: 
         findings.append(
             _finding("provenance_gap", "moderate", "manifest source name does not match input name", str(path))
         )
+    return findings
+
+
+def _scan_suspicious_text(decoded: str, rel_path: Path, policy: Policy) -> list[dict]:
+    if not policy.suspicious_text_enabled:
+        return []
+
+    snippet_chars = max(16, policy.suspicious_text_snippet_chars)
+    findings: list[dict] = []
+    seen: set[tuple[str, int, str]] = set()
+    truncated = decoded[: policy.suspicious_text_max_bytes]
+
+    for line_number, line in enumerate(truncated.splitlines(), start=1):
+        if len(findings) >= policy.suspicious_text_max_findings_per_file:
+            break
+        for rule_id, pattern in SUSPICIOUS_TEXT_RULES:
+            match = pattern.search(line)
+            if match is None:
+                continue
+            start = max(0, match.start() - (snippet_chars // 2))
+            end = min(len(line), start + snippet_chars)
+            snippet = safe_display(line[start:end])
+            key = (rule_id, line_number, snippet)
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.append(
+                _finding(
+                    "suspicious_text",
+                    "moderate",
+                    f"suspicious text matched rule {rule_id}",
+                    str(rel_path),
+                    rule_id=rule_id,
+                    line=line_number,
+                    snippet=snippet,
+                )
+            )
+            if len(findings) >= policy.suspicious_text_max_findings_per_file:
+                break
     return findings
 
 
@@ -112,8 +210,10 @@ def inspect_bundle(intake: IntakeRecord, unpacked: UnpackResult, policy: Policy)
                         _finding("schema_violation", "severe", f"xml parse failed: {error}", str(rel_path))
                     )
 
-            lower_name = rel_path.name.lower()
-            if lower_name.startswith("manifest") or lower_name == "provenance.json":
+            if rel_path.suffix.lower() in TEXT_EXTENSIONS | {""}:
+                findings.extend(_scan_suspicious_text(decoded, rel_path, policy))
+
+            if _is_supported_manifest(rel_path):
                 manifest_paths.append(str(rel_path))
                 manifest, parse_error = _parse_manifest(rel_path, data)
                 if parse_error:
@@ -192,15 +292,12 @@ def manifest_check(path: str) -> dict:
         manifests.append(str(candidate))
         if error:
             parse_errors.append(error)
-        elif manifest is None:
-            parse_errors.append(
-                _finding("schema_violation", "moderate", "manifest format unsupported", str(candidate))
-            )
 
     if source.is_dir():
-        for candidate in source.rglob("manifest.*"):
-            parse_candidate(candidate)
-    elif source.suffix.lower() in {".json", ".toml"} and source.name.lower().startswith("manifest"):
+        for candidate in sorted(source.rglob("*")):
+            if candidate.is_file() and _is_supported_manifest(candidate):
+                parse_candidate(candidate)
+    elif source.is_file() and _is_supported_manifest(source):
         parse_candidate(source)
     else:
         from wilderness.intake import identify_input_type
@@ -212,7 +309,7 @@ def manifest_check(path: str) -> dict:
             with zipfile.ZipFile(source) as archive:
                 for info in archive.infolist():
                     name = Path(info.filename).name.lower()
-                    if name.startswith("manifest."):
+                    if name in SUPPORTED_MANIFEST_NAMES:
                         parse_candidate(Path(info.filename), archive.read(info))
         elif artifact_type == "tar":
             with tarfile.open(source, mode="r:*") as archive:
@@ -220,7 +317,7 @@ def manifest_check(path: str) -> dict:
                     if member.isdir():
                         continue
                     name = Path(member.name).name.lower()
-                    if not name.startswith("manifest."):
+                    if name not in SUPPORTED_MANIFEST_NAMES:
                         continue
                     handle = archive.extractfile(member)
                     if handle is None:

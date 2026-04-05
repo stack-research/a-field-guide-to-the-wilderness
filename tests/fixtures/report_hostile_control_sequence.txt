@@ -1,0 +1,8 @@
+inspection_id: hostile-control
+status: shelter
+artifact_type: file
+files: 1
+promotion_eligible: True
+severity_counts: moderate=2
+[moderate] control_sequence control-sequence.txt :: control characters found in file content: hello\\x1b[31mworld\\n
+[moderate] provenance_gap - :: no manifest or provenance file found
