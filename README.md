@@ -31,6 +31,7 @@ Broad prompt-poison heuristics are still out of scope. This pass adds a narrow a
 ```bash
 wilderness inspect bundle.zip
 wilderness inspect bundle.zip --out shelter-copy/
+wilderness scan bundle-a.zip bundle-b.zip --json
 wilderness report .wilderness/reports/<inspection-id>.json
 wilderness promote .wilderness/reports/<inspection-id>.json
 wilderness verify .wilderness/reports/<inspection-id>.json
@@ -46,6 +47,8 @@ Each inspection writes:
 - an append-only JSONL history ledger at `.wilderness/history/<inspection-id>.jsonl`
 
 When policy enables forensic retention for blocked artifacts, `inspect` also copies the raw quarantined input into `.wilderness/discard/<inspection-id>/raw/` and records that path in the inspection artifact.
+
+`wilderness scan` runs the same per-artifact inspection path over many inputs and emits either a compact operator summary or a machine-readable aggregate JSON payload. It does not create a separate batch artifact. Each input still writes its normal per-inspection report and history ledger.
 
 Inspection artifacts now also carry a top-level `suspicious_text` section with normalization metadata, built-in rule counts, loaded pack provenance, and any local suspicious-text promotion-gating policy.
 
@@ -154,6 +157,7 @@ Discard-retention policy controls are:
 ## Exit Codes
 
 - `wilderness inspect`: `0` promotable, `10` completed but review-needed, `20` discard or blocked
+- `wilderness scan`: `0` all inputs promotable, `10` at least one review-needed and none blocked, `20` any blocked input or batch item failure
 - `wilderness promote`: `0` promoted, `20` blocked or stale
 - `wilderness verify`: `0` promotable or promoted, `20` blocked, stale, or not yet promoted when `--require-promoted` is set
 - `wilderness source`: `0` resolved and optionally exported, `20` missing, stale, or unavailable requested source

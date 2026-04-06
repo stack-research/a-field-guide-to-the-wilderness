@@ -32,10 +32,16 @@ class WildernessCliTests(unittest.TestCase):
             capture_output=True,
         )
 
-    def write_manifest_fallback_policy(self) -> Path:
+    def write_manifest_fallback_policy(self, *, state_root: str = ".wilderness") -> Path:
         policy = self.cwd / "policy.toml"
-        policy.write_text("manifest_free_fallback_enabled = true\n", encoding="utf-8")
+        policy.write_text(
+            f'state_root = "{state_root}"\nmanifest_free_fallback_enabled = true\n',
+            encoding="utf-8",
+        )
         return policy
+
+    def load_report(self, path: str | Path) -> dict:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
 
     def load_history(self, artifact: dict) -> list[dict]:
         history_path = Path(artifact["history_path"])
@@ -44,6 +50,15 @@ class WildernessCliTests(unittest.TestCase):
             for line in history_path.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
+
+    def run_scan_json(self, *inputs: str, policy: Path | None = None, input_list: Path | None = None) -> tuple[subprocess.CompletedProcess[str], dict]:
+        args = ["scan", *inputs, "--json"]
+        if input_list is not None:
+            args.extend(["--input-list", str(input_list)])
+        if policy is not None:
+            args.extend(["--policy", str(policy)])
+        result = self.run_cli(*args)
+        return result, json.loads(result.stdout)
 
     def test_benign_file_can_be_promoted(self) -> None:
         sample = ROOT / "data" / "benign" / "sample.json"
@@ -90,6 +105,160 @@ class WildernessCliTests(unittest.TestCase):
         history = self.load_history(artifact)
         self.assertEqual([event["event_type"] for event in history], ["received", "inspected"])
         self.assertEqual(history[1]["payload"]["report_path"], str(report_path.resolve()))
+
+    def test_scan_returns_zero_when_all_inputs_are_promotable(self) -> None:
+        first = self.cwd / "first.json"
+        second = self.cwd / "second.json"
+        first.write_text('{"ok": 1}\n', encoding="utf-8")
+        second.write_text('{"ok": 2}\n', encoding="utf-8")
+        policy = self.write_manifest_fallback_policy()
+
+        result, payload = self.run_scan_json(str(first), str(second), policy=policy)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(payload["total_inputs"], 2)
+        self.assertEqual(payload["promotable"], 2)
+        self.assertEqual(payload["review_needed"], 0)
+        self.assertEqual(payload["blocked"], 0)
+        self.assertEqual(
+            [item["status"] for item in payload["results"]],
+            ["shelter", "shelter"],
+        )
+
+    def test_scan_returns_review_when_any_input_needs_review(self) -> None:
+        promotable = self.cwd / "promotable.json"
+        promotable.write_text('{"ok": true}\n', encoding="utf-8")
+        review_needed = self.cwd / "review.zip"
+        with zipfile.ZipFile(review_needed, "w") as archive:
+            archive.writestr("notes.txt", "hello")
+        policy = self.write_manifest_fallback_policy()
+
+        result, payload = self.run_scan_json(str(promotable), str(review_needed), policy=policy)
+        self.assertEqual(result.returncode, 10, result.stdout + result.stderr)
+        self.assertEqual(payload["promotable"], 1)
+        self.assertEqual(payload["review_needed"], 1)
+        self.assertEqual(payload["blocked"], 0)
+        self.assertEqual(
+            [item["exit_code"] for item in payload["results"]],
+            [0, 10],
+        )
+
+    def test_scan_returns_blocked_when_any_input_is_blocked(self) -> None:
+        promotable = self.cwd / "promotable.json"
+        promotable.write_text('{"ok": true}\n', encoding="utf-8")
+        blocked = self.cwd / "blocked.zip"
+        with zipfile.ZipFile(blocked, "w") as archive:
+            archive.writestr("../escape.txt", "nope")
+        policy = self.write_manifest_fallback_policy()
+
+        result, payload = self.run_scan_json(str(promotable), str(blocked), policy=policy)
+        self.assertEqual(result.returncode, 20, result.stdout + result.stderr)
+        self.assertEqual(payload["promotable"], 1)
+        self.assertEqual(payload["review_needed"], 0)
+        self.assertEqual(payload["blocked"], 1)
+        self.assertEqual(payload["results"][1]["status"], "discard")
+
+    def test_scan_records_missing_input_and_continues(self) -> None:
+        present = self.cwd / "present.json"
+        present.write_text('{"ok": true}\n', encoding="utf-8")
+        missing = self.cwd / "missing.json"
+        policy = self.write_manifest_fallback_policy()
+
+        result, payload = self.run_scan_json(str(missing), str(present), policy=policy)
+        self.assertEqual(result.returncode, 20, result.stdout + result.stderr)
+        self.assertEqual(payload["total_inputs"], 2)
+        self.assertEqual(payload["blocked"], 1)
+        self.assertEqual(payload["promotable"], 1)
+        self.assertIsNone(payload["results"][0]["inspection_id"])
+        self.assertIsNone(payload["results"][0]["report_path"])
+        self.assertIsNone(payload["results"][0]["status"])
+        self.assertIn("missing.json", payload["results"][0]["error"])
+        self.assertEqual(payload["results"][1]["status"], "shelter")
+
+    def test_scan_input_list_is_appended_in_order(self) -> None:
+        first = self.cwd / "first.json"
+        second = self.cwd / "second.json"
+        third = self.cwd / "third.json"
+        for index, path in enumerate((first, second, third), start=1):
+            path.write_text(f'{{"ok": {index}}}\n', encoding="utf-8")
+        input_list = self.cwd / "inputs.txt"
+        input_list.write_text(f"{second}\n{third}\n", encoding="utf-8")
+        policy = self.write_manifest_fallback_policy()
+
+        result, payload = self.run_scan_json(str(first), policy=policy, input_list=input_list)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            [item["input"] for item in payload["results"]],
+            [str(first.resolve()), str(second.resolve()), str(third.resolve())],
+        )
+
+    def test_scan_json_shape_is_stable(self) -> None:
+        sample = self.cwd / "sample.json"
+        sample.write_text('{"ok": true}\n', encoding="utf-8")
+        policy = self.write_manifest_fallback_policy()
+
+        result, payload = self.run_scan_json(str(sample), policy=policy)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            set(payload),
+            {"blocked", "promotable", "results", "review_needed", "total_inputs"},
+        )
+        self.assertEqual(
+            set(payload["results"][0]),
+            {"error", "exit_code", "input", "inspection_id", "report_path", "status"},
+        )
+
+    def test_scan_human_output_escapes_hostile_names_and_includes_totals(self) -> None:
+        hostile = self.cwd / "ansi\x1b[31m.json"
+        hostile.write_text('{"ok": true}\n', encoding="utf-8")
+        policy = self.write_manifest_fallback_policy()
+
+        result = self.run_cli("scan", str(hostile), "--policy", str(policy))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("\\x1b", result.stdout)
+        self.assertNotIn("\x1b", result.stdout)
+        self.assertIn("class=promotable", result.stdout)
+        self.assertIn("totals: total_inputs=1 promotable=1 review_needed=0 blocked=0", result.stdout)
+
+    def test_scan_matches_repeated_inspect_report_and_history_behavior(self) -> None:
+        first = self.cwd / "first.json"
+        second = self.cwd / "second.json"
+        first.write_text('{"ok": 1}\n', encoding="utf-8")
+        second.write_text('{"ok": 2}\n', encoding="utf-8")
+
+        scan_policy = self.cwd / "scan-policy.toml"
+        scan_policy.write_text(
+            'state_root = ".scan-state"\nmanifest_free_fallback_enabled = true\n',
+            encoding="utf-8",
+        )
+        inspect_policy = self.cwd / "inspect-policy.toml"
+        inspect_policy.write_text(
+            'state_root = ".inspect-state"\nmanifest_free_fallback_enabled = true\n',
+            encoding="utf-8",
+        )
+
+        scan_result, scan_payload = self.run_scan_json(str(first), str(second), policy=scan_policy)
+        self.assertEqual(scan_result.returncode, 0, scan_result.stdout + scan_result.stderr)
+        inspect_results = [
+            self.run_cli("inspect", str(path), "--json", "--policy", str(inspect_policy))
+            for path in (first, second)
+        ]
+        inspect_artifacts = [json.loads(result.stdout) for result in inspect_results]
+
+        self.assertEqual(len(scan_payload["results"]), len(inspect_artifacts))
+        for scan_item, inspect_artifact in zip(scan_payload["results"], inspect_artifacts):
+            scan_artifact = self.load_report(scan_item["report_path"])
+            self.assertEqual(scan_item["status"], inspect_artifact["status"])
+            self.assertEqual(scan_artifact["status"], inspect_artifact["status"])
+            self.assertEqual(scan_artifact["promotion"], inspect_artifact["promotion"])
+            self.assertEqual(scan_artifact["manifest"], inspect_artifact["manifest"])
+            self.assertEqual(
+                [finding["family"] for finding in scan_artifact["findings"]],
+                [finding["family"] for finding in inspect_artifact["findings"]],
+            )
+            self.assertEqual(
+                [event["event_type"] for event in self.load_history(scan_artifact)],
+                [event["event_type"] for event in self.load_history(inspect_artifact)],
+            )
 
     def test_archive_traversal_is_blocked(self) -> None:
         bundle = self.cwd / "traversal.zip"

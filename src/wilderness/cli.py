@@ -36,6 +36,14 @@ def _report_path(state_root: Path, inspection_id: str) -> Path:
     return state_root / "reports" / f"{inspection_id}.json"
 
 
+def _result_class(exit_code: int) -> str:
+    if exit_code == EXIT_OK:
+        return "promotable"
+    if exit_code == EXIT_REVIEW:
+        return "review_needed"
+    return "blocked"
+
+
 def _source_resolution(
     *,
     available: bool,
@@ -357,43 +365,26 @@ def _inspect_exit_code(artifact: dict) -> int:
     return EXIT_REVIEW
 
 
-def _load_rule_set_or_error(policy: object):
-    try:
-        return load_suspicious_text_rules(policy)
-    except ValueError as error:
-        print(f"policy error: {error}", file=sys.stderr)
-        return None
-
-
-def _validate_policy(policy) -> str | None:
-    if not isinstance(policy.suspicious_text_block_rule_ids, list):
-        return "suspicious_text_block_rule_ids must be a list"
-    seen_rule_ids: set[str] = set()
-    for rule_id in policy.suspicious_text_block_rule_ids:
-        if not isinstance(rule_id, str) or not rule_id:
-            return "suspicious_text_block_rule_ids entries must be non-empty strings"
-        if rule_id in seen_rule_ids:
-            return "suspicious_text_block_rule_ids entries must be unique"
-        seen_rule_ids.add(rule_id)
-    if policy.manifest_free_fallback_scope != "single_file_text_or_json":
-        return "manifest_free_fallback_scope must be 'single_file_text_or_json'"
-    if policy.manifest_free_fallback_enabled and not policy.manifest_required_for_promotion:
-        return "manifest_free_fallback_enabled requires manifest_required_for_promotion to stay true"
-    if policy.discard_copy_mode != "copy":
-        return "discard_copy_mode must be 'copy'"
-    return None
-
-
-def cmd_inspect(args: argparse.Namespace) -> int:
-    policy = load_policy(args.policy)
+def _load_policy_and_rules(policy_path: str | None):
+    policy = load_policy(policy_path)
     policy_error = _validate_policy(policy)
     if policy_error is not None:
         print(f"policy error: {policy_error}", file=sys.stderr)
-        return EXIT_BLOCKED
+        return None, None
     suspicious_text_rules = _load_rule_set_or_error(policy)
     if suspicious_text_rules is None:
-        return EXIT_BLOCKED
-    intake, state = land_input(args.input, policy)
+        return None, None
+    return policy, suspicious_text_rules
+
+
+def _run_inspection(
+    input_path: str,
+    *,
+    policy,
+    suspicious_text_rules,
+    out_path: str | None = None,
+) -> tuple[dict, Path]:
+    intake, state = land_input(input_path, policy)
     history_path = inspection_history_path(state.root, intake.inspection_id)
     append_history_event(
         history_path,
@@ -408,7 +399,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             },
         ),
     )
-    unpacked = build_shelter(intake, state, policy, args.out)
+    unpacked = build_shelter(intake, state, policy, out_path)
     artifact = inspect_bundle(
         intake,
         unpacked,
@@ -448,12 +439,177 @@ def cmd_inspect(args: argparse.Namespace) -> int:
                 },
             ),
         )
-    if args.json:
+    return artifact, report_path
+
+
+def _emit_inspect_output(artifact: dict, report_path: Path, *, as_json: bool) -> None:
+    if as_json:
         print(report_path.read_text(encoding="utf-8"), end="")
-    else:
-        print(render_report(artifact))
-        print(f"report_path: {report_path}")
+        return
+    print(render_report(artifact))
+    print(f"report_path: {report_path}")
+
+
+def _scan_result(
+    input_path: str,
+    *,
+    exit_code: int,
+    artifact: dict | None = None,
+    report_path: Path | None = None,
+    error: str | None = None,
+) -> dict:
+    return {
+        "input": str(Path(input_path).expanduser().resolve()),
+        "exit_code": exit_code,
+        "status": artifact["status"] if artifact is not None else None,
+        "inspection_id": artifact["inspection_id"] if artifact is not None else None,
+        "report_path": str(report_path.resolve()) if report_path is not None else None,
+        "error": error,
+    }
+
+
+def _scan_counts(results: list[dict]) -> dict[str, int]:
+    return {
+        "promotable": sum(1 for result in results if result["exit_code"] == EXIT_OK),
+        "review_needed": sum(1 for result in results if result["exit_code"] == EXIT_REVIEW),
+        "blocked": sum(1 for result in results if result["exit_code"] == EXIT_BLOCKED),
+    }
+
+
+def _scan_exit_code(results: list[dict]) -> int:
+    if any(result["exit_code"] == EXIT_BLOCKED for result in results):
+        return EXIT_BLOCKED
+    if any(result["exit_code"] == EXIT_REVIEW for result in results):
+        return EXIT_REVIEW
+    return EXIT_OK
+
+
+def _read_scan_input_list(path: str) -> list[str]:
+    raw_lines = Path(path).expanduser().read_text(encoding="utf-8").splitlines()
+    return [line for line in raw_lines if line.strip()]
+
+
+def _render_scan_result(result: dict) -> str:
+    parts = [
+        safe_display(result["input"]),
+        f"class={_result_class(result['exit_code'])}",
+        f"status={result['status'] or '-'}",
+    ]
+    if result["inspection_id"] is not None:
+        parts.append(f"inspection_id={result['inspection_id']}")
+    if result["report_path"] is not None:
+        parts.append(f"report_path={safe_display(result['report_path'])}")
+    if result["error"] is not None:
+        parts.append(f"error={safe_display(result['error'])}")
+    return " ".join(parts)
+
+
+def _load_rule_set_or_error(policy: object):
+    try:
+        return load_suspicious_text_rules(policy)
+    except ValueError as error:
+        print(f"policy error: {error}", file=sys.stderr)
+        return None
+
+
+def _validate_policy(policy) -> str | None:
+    if not isinstance(policy.suspicious_text_block_rule_ids, list):
+        return "suspicious_text_block_rule_ids must be a list"
+    seen_rule_ids: set[str] = set()
+    for rule_id in policy.suspicious_text_block_rule_ids:
+        if not isinstance(rule_id, str) or not rule_id:
+            return "suspicious_text_block_rule_ids entries must be non-empty strings"
+        if rule_id in seen_rule_ids:
+            return "suspicious_text_block_rule_ids entries must be unique"
+        seen_rule_ids.add(rule_id)
+    if policy.manifest_free_fallback_scope != "single_file_text_or_json":
+        return "manifest_free_fallback_scope must be 'single_file_text_or_json'"
+    if policy.manifest_free_fallback_enabled and not policy.manifest_required_for_promotion:
+        return "manifest_free_fallback_enabled requires manifest_required_for_promotion to stay true"
+    if policy.discard_copy_mode != "copy":
+        return "discard_copy_mode must be 'copy'"
+    return None
+
+
+def cmd_inspect(args: argparse.Namespace) -> int:
+    policy, suspicious_text_rules = _load_policy_and_rules(args.policy)
+    if policy is None or suspicious_text_rules is None:
+        return EXIT_BLOCKED
+    artifact, report_path = _run_inspection(
+        args.input,
+        policy=policy,
+        suspicious_text_rules=suspicious_text_rules,
+        out_path=args.out,
+    )
+    _emit_inspect_output(artifact, report_path, as_json=args.json)
     return _inspect_exit_code(artifact)
+
+
+def cmd_scan(args: argparse.Namespace) -> int:
+    policy, suspicious_text_rules = _load_policy_and_rules(args.policy)
+    if policy is None or suspicious_text_rules is None:
+        return EXIT_BLOCKED
+
+    inputs = list(args.inputs)
+    if args.input_list:
+        try:
+            inputs.extend(_read_scan_input_list(args.input_list))
+        except OSError as error:
+            print(f"scan error: unable to read input list: {error}", file=sys.stderr)
+            return EXIT_BLOCKED
+
+    if not inputs:
+        print("scan error: no inputs provided", file=sys.stderr)
+        return EXIT_BLOCKED
+
+    results = []
+    for input_path in inputs:
+        try:
+            artifact, report_path = _run_inspection(
+                input_path,
+                policy=policy,
+                suspicious_text_rules=suspicious_text_rules,
+            )
+        except OSError as error:
+            results.append(
+                _scan_result(
+                    input_path,
+                    exit_code=EXIT_BLOCKED,
+                    error=str(error),
+                )
+            )
+            continue
+        results.append(
+            _scan_result(
+                input_path,
+                exit_code=_inspect_exit_code(artifact),
+                artifact=artifact,
+                report_path=report_path,
+            )
+        )
+
+    counts = _scan_counts(results)
+    payload = {
+        "total_inputs": len(results),
+        "promotable": counts["promotable"],
+        "review_needed": counts["review_needed"],
+        "blocked": counts["blocked"],
+        "results": results,
+    }
+
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        for result in results:
+            print(_render_scan_result(result))
+        print(
+            "totals: "
+            f"total_inputs={payload['total_inputs']} "
+            f"promotable={payload['promotable']} "
+            f"review_needed={payload['review_needed']} "
+            f"blocked={payload['blocked']}"
+        )
+    return _scan_exit_code(results)
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -731,6 +887,13 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("--json", action="store_true")
     inspect_parser.add_argument("--policy")
     inspect_parser.set_defaults(func=cmd_inspect)
+
+    scan_parser = subparsers.add_parser("scan")
+    scan_parser.add_argument("inputs", nargs="*")
+    scan_parser.add_argument("--input-list")
+    scan_parser.add_argument("--json", action="store_true")
+    scan_parser.add_argument("--policy")
+    scan_parser.set_defaults(func=cmd_scan)
 
     report_parser = subparsers.add_parser("report")
     report_parser.add_argument("report")

@@ -140,3 +140,11 @@ This checklist feeds the first implementation sprints for `wilderness`.
 - [x] Compare manifest file inventories against the normalized non-manifest payload set
 - [x] Make promotion require a valid v2 manifest unless existing manifest-free fallback applies
 - [x] Surface validity versus promotability in `manifest-check`
+
+## Operator-Scale Batch Scan
+
+- [x] Add `scan` as a batch intake command that reuses the single-artifact inspection path
+- [x] Support positional inputs plus newline-delimited `--input-list` expansion
+- [x] Emit compact human summaries and aggregate JSON without persisting a batch artifact
+- [x] Preserve per-input report and history side effects exactly as `inspect` does
+- [x] Add CLI coverage for batch exit codes, ordering, missing inputs, and safe terminal rendering

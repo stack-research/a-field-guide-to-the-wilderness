@@ -176,13 +176,15 @@ The tool should treat all inputs as opaque until identified. File extensions are
 
 ## Output Model
 
-Every run should produce:
+Every inspection run should produce:
 
 - a human-readable terminal report
 - a machine-readable inspection artifact
 - an append-only inspection history log for trust-state transitions
 
 When policy enables forensic retention for blocked artifacts, the run should also produce a discard-pile copy of the raw quarantined input.
+
+Batch intake commands may also emit a non-persisted aggregate summary, but trust state and provenance should still stay per inspection, not per batch.
 
 Recommended top-level inspection artifact fields:
 
@@ -367,6 +369,9 @@ camp inspect bundle.zip --out shelter/
 # Print only the machine-readable report
 camp inspect bundle.zip --json
 
+# Inspect many inputs and emit an aggregate summary
+camp scan bundle-a.zip bundle-b.zip --json
+
 # Promote a previously inspected bundle to safe camp if policy allows
 camp promote inspection.json
 
@@ -389,12 +394,13 @@ camp manifest-check bundle.zip
 The command names are placeholders. The important point is the workflow shape:
 
 - inspect
+- scan
 - report
 - promote
 - verify
 - source
 - suspicious-text-check
-- validate
+- manifest-check
 
 ## Policy Model
 
