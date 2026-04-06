@@ -14,7 +14,7 @@ from wilderness.inspect import (
     suspicious_text_rule_listing,
 )
 from wilderness.intake import land_input, retain_discard_copy
-from wilderness.policy import load_policy
+from wilderness.policy import PolicyValidationError, load_policy
 from wilderness.provenance import build_history_event, inspection_history_path
 from wilderness.report import (
     append_history_event,
@@ -365,11 +365,17 @@ def _inspect_exit_code(artifact: dict) -> int:
     return EXIT_REVIEW
 
 
+def _load_policy_or_error(policy_path: str | None):
+    try:
+        return load_policy(policy_path)
+    except PolicyValidationError as error:
+        print(f"policy error: {error}", file=sys.stderr)
+        return None
+
+
 def _load_policy_and_rules(policy_path: str | None):
-    policy = load_policy(policy_path)
-    policy_error = _validate_policy(policy)
-    if policy_error is not None:
-        print(f"policy error: {policy_error}", file=sys.stderr)
+    policy = _load_policy_or_error(policy_path)
+    if policy is None:
         return None, None
     suspicious_text_rules = _load_rule_set_or_error(policy)
     if suspicious_text_rules is None:
@@ -511,26 +517,6 @@ def _load_rule_set_or_error(policy: object):
         print(f"policy error: {error}", file=sys.stderr)
         return None
 
-
-def _validate_policy(policy) -> str | None:
-    if not isinstance(policy.suspicious_text_block_rule_ids, list):
-        return "suspicious_text_block_rule_ids must be a list"
-    seen_rule_ids: set[str] = set()
-    for rule_id in policy.suspicious_text_block_rule_ids:
-        if not isinstance(rule_id, str) or not rule_id:
-            return "suspicious_text_block_rule_ids entries must be non-empty strings"
-        if rule_id in seen_rule_ids:
-            return "suspicious_text_block_rule_ids entries must be unique"
-        seen_rule_ids.add(rule_id)
-    if policy.manifest_free_fallback_scope != "single_file_text_or_json":
-        return "manifest_free_fallback_scope must be 'single_file_text_or_json'"
-    if policy.manifest_free_fallback_enabled and not policy.manifest_required_for_promotion:
-        return "manifest_free_fallback_enabled requires manifest_required_for_promotion to stay true"
-    if policy.discard_copy_mode != "copy":
-        return "discard_copy_mode must be 'copy'"
-    return None
-
-
 def cmd_inspect(args: argparse.Namespace) -> int:
     policy, suspicious_text_rules = _load_policy_and_rules(args.policy)
     if policy is None or suspicious_text_rules is None:
@@ -619,8 +605,10 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 
 def cmd_promote(args: argparse.Namespace) -> int:
+    policy = _load_policy_or_error(args.policy)
+    if policy is None:
+        return EXIT_BLOCKED
     artifact = load_report(args.report)
-    policy = load_policy(args.policy)
     blockers = _current_blocking_reasons(artifact)
     history_path = Path(artifact["history_path"])
     if blockers:
@@ -758,6 +746,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 def cmd_manifest_check(args: argparse.Namespace) -> int:
+    if _load_policy_or_error(args.policy) is None:
+        return EXIT_BLOCKED
     result = manifest_check(args.input)
     print(f"input: {result['input']}")
     print(f"valid: {result['valid']}")
@@ -824,8 +814,25 @@ def _render_suspicious_text_check(result: dict) -> str:
     return "\n".join(lines)
 
 
+def cmd_policy_check(args: argparse.Namespace) -> int:
+    policy = _load_policy_or_error(args.policy)
+    if policy is None:
+        return EXIT_BLOCKED
+    print("valid: True")
+    print(f"policy_path: {policy.source_path or '(default)'}")
+    if policy.loaded_rule_packs:
+        print("loaded_packs:")
+        for pack in policy.loaded_rule_packs:
+            print(f"  - {pack.path}")
+    else:
+        print("loaded_packs: none")
+    return EXIT_OK
+
+
 def cmd_suspicious_text_check(args: argparse.Namespace) -> int:
-    policy = load_policy(args.policy)
+    policy = _load_policy_or_error(args.policy)
+    if policy is None:
+        return EXIT_BLOCKED
     rule_set = _load_rule_set_or_error(policy)
     if rule_set is None:
         return EXIT_BLOCKED
@@ -919,6 +926,10 @@ def build_parser() -> argparse.ArgumentParser:
     manifest_parser.add_argument("input")
     manifest_parser.add_argument("--policy")
     manifest_parser.set_defaults(func=cmd_manifest_check)
+
+    policy_parser = subparsers.add_parser("policy-check")
+    policy_parser.add_argument("policy")
+    policy_parser.set_defaults(func=cmd_policy_check)
 
     verify_parser = subparsers.add_parser("verify")
     verify_parser.add_argument("report")

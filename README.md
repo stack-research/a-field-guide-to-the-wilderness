@@ -36,6 +36,7 @@ wilderness report .wilderness/reports/<inspection-id>.json
 wilderness promote .wilderness/reports/<inspection-id>.json
 wilderness verify .wilderness/reports/<inspection-id>.json
 wilderness source .wilderness/reports/<inspection-id>.json
+wilderness policy-check policy.toml
 wilderness suspicious-text-check suspicious.txt
 wilderness manifest-check bundle.zip
 ```
@@ -138,6 +139,8 @@ Manifest promotion policy controls are:
 
 Rule packs are local TOML files referenced from policy. Relative pack paths resolve from the policy file directory.
 
+`wilderness policy-check` validates one policy file without creating `.wilderness/` state. It prints whether the policy is valid, the resolved policy path, and any resolved suspicious-text rule-pack paths.
+
 ```toml
 schema_version = 1
 
@@ -161,6 +164,7 @@ Discard-retention policy controls are:
 - `wilderness promote`: `0` promoted, `20` blocked or stale
 - `wilderness verify`: `0` promotable or promoted, `20` blocked, stale, or not yet promoted when `--require-promoted` is set
 - `wilderness source`: `0` resolved and optionally exported, `20` missing, stale, or unavailable requested source
+- `wilderness policy-check`: `0` valid policy, `20` invalid policy
 - `wilderness suspicious-text-check`: `0` successful check or rule listing, `20` invalid input, non-text input, or invalid policy/rule pack
 - `wilderness manifest-check`: `0` valid supported manifests, `20` invalid or missing supported manifests
 - `wilderness report`: `0` on successful render

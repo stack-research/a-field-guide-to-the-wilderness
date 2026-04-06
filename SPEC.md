@@ -381,6 +381,9 @@ camp verify inspection.json
 # Resolve or export the exact downstream-ready tree
 camp source inspection.json
 
+# Validate one policy file and its referenced rule packs
+camp policy-check policy.toml
+
 # Explain suspicious-text matches for one file
 camp suspicious-text-check suspicious.txt
 
@@ -399,6 +402,7 @@ The command names are placeholders. The important point is the workflow shape:
 - promote
 - verify
 - source
+- policy-check
 - suspicious-text-check
 - manifest-check
 
@@ -426,6 +430,8 @@ Expected policy controls:
 - promotion thresholds
 
 Policy should be local and inspectable. No cloud dependency.
+
+Policy loading should reject unknown fields, mistyped values, and invalid referenced suspicious-text rule packs before any command creates trust-state side effects. A dedicated `policy-check` command should let operators validate policy files without performing inspection.
 
 Suspicious-text policy should support both an opt-in block-all mode and a list of blocking `rule_id` values. Blocking suspicious-text findings should affect promotion eligibility and downstream verification, but should not reclassify artifacts as `discard` on their own.
 

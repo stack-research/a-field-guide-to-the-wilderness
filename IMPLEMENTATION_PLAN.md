@@ -148,3 +148,11 @@ This checklist feeds the first implementation sprints for `wilderness`.
 - [x] Emit compact human summaries and aggregate JSON without persisting a batch artifact
 - [x] Preserve per-input report and history side effects exactly as `inspect` does
 - [x] Add CLI coverage for batch exit codes, ordering, missing inputs, and safe terminal rendering
+
+## Policy Hardening And Validation
+
+- [x] Centralize policy parsing and validation in `policy.py`
+- [x] Reject unknown policy fields, mistyped values, invalid enums, and duplicate blocking rule ids
+- [x] Validate referenced suspicious-text rule packs during policy load
+- [x] Make all policy-aware commands fail through one shared policy-loading path
+- [x] Add `policy-check` as a read-only CLI for validating policy files and resolved rule-pack paths

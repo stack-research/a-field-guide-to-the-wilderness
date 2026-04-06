@@ -10,6 +10,9 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from wilderness.policy import PolicyValidationError, load_policy
 
 
 class WildernessPolicyTests(unittest.TestCase):
@@ -29,6 +32,166 @@ class WildernessPolicyTests(unittest.TestCase):
             text=True,
             capture_output=True,
         )
+
+    def write_policy(self, body: str, *, name: str = "policy.toml") -> Path:
+        policy = self.cwd / name
+        policy.write_text(textwrap.dedent(body).strip() + "\n", encoding="utf-8")
+        return policy
+
+    def assert_policy_error(self, body: str, message: str) -> None:
+        policy = self.write_policy(body)
+        with self.assertRaises(PolicyValidationError) as error:
+            load_policy(str(policy))
+        self.assertIn(message, str(error.exception))
+
+    def test_unknown_top_level_policy_field_is_rejected(self) -> None:
+        self.assert_policy_error(
+            """
+            manifest_free_fallback_enabled = true
+            unknown_field = 1
+            """,
+            "unknown policy field",
+        )
+
+    def test_unknown_redaction_policy_field_is_rejected(self) -> None:
+        self.assert_policy_error(
+            """
+            manifest_free_fallback_enabled = true
+
+            [redaction]
+            enabled = true
+            strange = true
+            """,
+            "unknown redaction policy field",
+        )
+
+    def test_wrong_scalar_type_is_rejected(self) -> None:
+        self.assert_policy_error(
+            """
+            manifest_free_fallback_enabled = "yes"
+            """,
+            "manifest_free_fallback_enabled must be a boolean",
+        )
+
+    def test_wrong_list_type_is_rejected(self) -> None:
+        self.assert_policy_error(
+            """
+            suspicious_text_rule_packs = "custom.toml"
+            """,
+            "suspicious_text_rule_packs must be a list",
+        )
+
+    def test_empty_string_list_item_is_rejected(self) -> None:
+        self.assert_policy_error(
+            """
+            suspicious_text_rule_packs = [""]
+            """,
+            "suspicious_text_rule_packs entries must be non-empty strings",
+        )
+
+    def test_invalid_enum_value_is_rejected(self) -> None:
+        self.assert_policy_error(
+            """
+            manifest_free_fallback_scope = "anything"
+            """,
+            "manifest_free_fallback_scope must be",
+        )
+
+    def test_non_positive_numeric_limit_is_rejected(self) -> None:
+        self.assert_policy_error(
+            """
+            suspicious_text_max_bytes = 0
+            """,
+            "suspicious_text_max_bytes must be a positive integer",
+        )
+
+    def test_duplicate_block_rule_ids_are_rejected(self) -> None:
+        self.assert_policy_error(
+            """
+            suspicious_text_block_rule_ids = ["credential_request", "credential_request"]
+            """,
+            "suspicious_text_block_rule_ids entries must be unique",
+        )
+
+    def test_policy_check_accepts_valid_policy_and_lists_loaded_packs(self) -> None:
+        pack = self.cwd / "custom.toml"
+        pack.write_text(
+            textwrap.dedent(
+                """
+                schema_version = 1
+
+                [[rules]]
+                id = "audit_log_leak"
+                pattern = "leak the audit log"
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        policy = self.write_policy(
+            """
+            manifest_free_fallback_enabled = true
+            suspicious_text_rule_packs = ["custom.toml"]
+            """
+        )
+
+        result = self.run_cli("policy-check", str(policy))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("valid: True", result.stdout)
+        self.assertIn(f"policy_path: {policy.resolve()}", result.stdout)
+        self.assertIn(str(pack.resolve()), result.stdout)
+
+    def test_policy_check_rejects_invalid_policy(self) -> None:
+        policy = self.write_policy(
+            """
+            manifest_free_fallback_enabled = "yes"
+            """
+        )
+
+        result = self.run_cli("policy-check", str(policy))
+        self.assertEqual(result.returncode, 20)
+        self.assertIn("policy error:", result.stderr)
+
+    def test_policy_aware_commands_reject_same_invalid_policy_before_side_effects(self) -> None:
+        sample = self.cwd / "sample.json"
+        sample.write_text('{"ok": true}\n', encoding="utf-8")
+        notes = self.cwd / "notes.txt"
+        notes.write_text("plain text\n", encoding="utf-8")
+        valid_policy = self.write_policy(
+            """
+            manifest_free_fallback_enabled = true
+            """,
+            name="valid-policy.toml",
+        )
+        invalid_policy = self.write_policy(
+            """
+            state_root = ".broken-state"
+            manifest_free_fallback_enabled = "yes"
+            """,
+            name="invalid-policy.toml",
+        )
+
+        inspect = self.run_cli("inspect", str(sample), "--json", "--policy", str(valid_policy))
+        self.assertEqual(inspect.returncode, 0, inspect.stderr)
+        artifact = json.loads(inspect.stdout)
+        report_path = self.cwd / ".wilderness" / "reports" / f"{artifact['inspection_id']}.json"
+        history_path = Path(artifact["history_path"])
+        history_before = history_path.read_text(encoding="utf-8")
+
+        commands = [
+            ("inspect", str(sample), "--policy", str(invalid_policy)),
+            ("scan", str(sample), "--policy", str(invalid_policy)),
+            ("promote", str(report_path), "--policy", str(invalid_policy)),
+            ("manifest-check", str(sample), "--policy", str(invalid_policy)),
+            ("suspicious-text-check", str(notes), "--policy", str(invalid_policy)),
+        ]
+        for args in commands:
+            result = self.run_cli(*args)
+            self.assertEqual(result.returncode, 20, (args, result.stdout, result.stderr))
+            self.assertIn("policy error:", result.stderr, args)
+
+        self.assertEqual(history_path.read_text(encoding="utf-8"), history_before)
+        self.assertFalse((self.cwd / ".broken-state").exists())
 
     def test_control_characters_are_reported_safely(self) -> None:
         hostile_name = self.cwd / "ansi.txt"

@@ -21,7 +21,12 @@ from wilderness.common import (
     sha256_file,
 )
 from wilderness.intake import IntakeRecord
-from wilderness.policy import Policy
+from wilderness.policy import (
+    Policy,
+    load_rule_pack_definition,
+    resolve_rule_pack_path,
+    validate_suspicious_rule_definition,
+)
 from wilderness.redact import redact_bytes
 from wilderness.unpack import UnpackResult
 
@@ -495,64 +500,28 @@ def _compile_suspicious_pattern(pattern: str, context: str) -> re.Pattern[str]:
 
 
 def _compile_suspicious_rule(raw_rule: dict, context: str) -> SuspiciousTextRule:
-    rule_id = raw_rule.get("id")
-    pattern = raw_rule.get("pattern")
-    if not isinstance(rule_id, str) or not rule_id:
-        raise ValueError(f"{context}: rule id must be a non-empty string")
-    if not isinstance(pattern, str) or not pattern:
-        raise ValueError(f"{context}: rule pattern must be a non-empty string")
-    description = raw_rule.get("description")
-    if description is not None and not isinstance(description, str):
-        raise ValueError(f"{context}: description must be a string")
-    exclude_pattern_text = raw_rule.get("exclude_pattern")
-    if exclude_pattern_text is not None and not isinstance(exclude_pattern_text, str):
-        raise ValueError(f"{context}: exclude_pattern must be a string")
-    window_lines = raw_rule.get("window_lines")
-    if window_lines is not None and (not isinstance(window_lines, int) or window_lines < 0):
-        raise ValueError(f"{context}: window_lines must be a non-negative integer")
+    rule = validate_suspicious_rule_definition(raw_rule, context)
+    exclude_pattern_text = rule["exclude_pattern"]
     return SuspiciousTextRule(
-        rule_id=rule_id,
-        pattern=_compile_suspicious_pattern(pattern, context),
-        description=description,
+        rule_id=rule["id"],
+        pattern=_compile_suspicious_pattern(rule["pattern"], context),
+        description=rule["description"],
         exclude_pattern=(
             _compile_suspicious_pattern(exclude_pattern_text, context)
             if exclude_pattern_text is not None
             else None
         ),
-        window_lines=window_lines,
+        window_lines=rule["window_lines"],
     )
 
 
-def _resolve_rule_pack_path(pack_path: str, policy: Policy) -> Path:
-    candidate = Path(pack_path).expanduser()
-    if candidate.is_absolute():
-        return candidate
-    if policy.source_path:
-        return Path(policy.source_path).parent / candidate
-    return Path.cwd() / candidate
-
-
 def _load_rule_pack(pack_path: Path) -> tuple[SuspiciousTextPack, list[SuspiciousTextRule]]:
-    try:
-        raw_bytes = pack_path.read_bytes()
-    except OSError as error:
-        raise ValueError(f"unable to read suspicious-text rule pack {pack_path}: {error.strerror}") from error
-    try:
-        raw = tomllib.loads(raw_bytes.decode("utf-8"))
-    except tomllib.TOMLDecodeError as error:
-        raise ValueError(f"invalid suspicious-text rule pack {pack_path}: {error}") from error
-    except UnicodeDecodeError as error:
-        raise ValueError(f"invalid suspicious-text rule pack {pack_path}: {error}") from error
-
-    if raw.get("schema_version") != 1:
-        raise ValueError(f"invalid suspicious-text rule pack {pack_path}: schema_version must be 1")
+    raw_bytes = pack_path.read_bytes()
+    raw = tomllib.loads(raw_bytes.decode("utf-8"))
     rules = raw.get("rules")
-    if not isinstance(rules, list) or not rules:
-        raise ValueError(f"invalid suspicious-text rule pack {pack_path}: rules must be a non-empty list")
+    pack_info = load_rule_pack_definition(pack_path)
     compiled = []
     for index, raw_rule in enumerate(rules, start=1):
-        if not isinstance(raw_rule, dict):
-            raise ValueError(f"invalid suspicious-text rule pack {pack_path}: rule {index} must be a table")
         compiled_rule = _compile_suspicious_rule(raw_rule, f"{pack_path} rule {index}")
         compiled.append(
             SuspiciousTextRule(
@@ -567,9 +536,9 @@ def _load_rule_pack(pack_path: Path) -> tuple[SuspiciousTextPack, list[Suspiciou
             )
         )
     pack = SuspiciousTextPack(
-        path=str(pack_path.resolve()),
-        sha256=sha256_bytes(raw_bytes),
-        rule_count=len(compiled),
+        path=pack_info.path,
+        sha256=pack_info.sha256,
+        rule_count=pack_info.rule_count,
     )
     return pack, compiled
 
@@ -591,10 +560,12 @@ def load_suspicious_text_rules(policy: Policy) -> SuspiciousTextRuleSet:
     ]
     loaded_packs: list[SuspiciousTextPack] = []
     pack_rules: list[SuspiciousTextRule] = []
-    for pack in policy.suspicious_text_rule_packs:
-        if not isinstance(pack, str) or not pack:
-            raise ValueError("suspicious_text_rule_packs entries must be non-empty strings")
-        pack_info, compiled_rules = _load_rule_pack(_resolve_rule_pack_path(pack, policy))
+    pack_paths = policy.loaded_rule_packs or [
+        load_rule_pack_definition(resolve_rule_pack_path(pack, policy))
+        for pack in policy.suspicious_text_rule_packs
+    ]
+    for pack in pack_paths:
+        pack_info, compiled_rules = _load_rule_pack(Path(pack.path))
         loaded_packs.append(pack_info)
         pack_rules.extend(compiled_rules)
     active_rules: list[SuspiciousTextRule] = []
